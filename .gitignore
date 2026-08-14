@@ -1,0 +1,15 @@
+# Build artifacts. Upstream ships no .gitignore, so a plain `git add -A` after a
+# build sweeps 50+ object files into the commit — which is exactly what happened
+# on the first attempt here. The engine source is what has to be public, not the
+# leftovers of one machine's compiler.
+build/
+*.o
+*.d
+*.elf
+*.nso
+*.npdm
+*.nacp
+*.lst
+*.map
+*.ovl
+*.nro

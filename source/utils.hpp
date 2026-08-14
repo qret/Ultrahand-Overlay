@@ -16,6 +16,26 @@
  *  Copyright (c) 2023-2026 ppkantorski
  ********************************************************************************/
 
+/*  MODIFIED BY THE Ultrahand-4IFIR PROJECT
+ *  ----------------------------------------
+ *  This file is not the upstream original. Changes are marked in place with the
+ *  comment "4IFIR CHANGE" and listed here, as GPL v2 section 2(a) requires.
+ *
+ *  2026-08-14  {slice(...)} now parses its own arguments FROM THE END of the parameter
+ *              list instead of the beginning. The two indices are always the last two
+ *              arguments, so the subject string may now itself contain commas. Before
+ *              this, such a value was truncated at its first comma and only the part
+ *              before it was ever reachable. Values without commas are unaffected.
+ *
+ *              {split(...)} has the same weakness and is deliberately NOT changed:
+ *              its delimiter argument may itself be a quoted comma, and then parsing
+ *              from either end is ambiguous. Fixing it properly needs quote-aware
+ *              scanning, which is not needed here - the packed values this project
+ *              reads are fixed-width, so {slice(...)} is enough.
+ *
+ *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
+ ********************************************************************************/
+
 #pragma once
 #include <ultra.hpp>
 #include <tesla.hpp>
@@ -3459,16 +3479,21 @@ bool applyPlaceholderReplacements(std::vector<std::string>& cmd, const std::stri
             }
         
             const std::string parameters = placeholder.substr(startPos + 1, endPos - startPos - 1);
-            const size_t firstComma = parameters.find(',');
-            const size_t secondComma = (firstComma == std::string::npos) ? 
-                std::string::npos : parameters.find(',', firstComma + 1);
-            if (firstComma == std::string::npos || secondComma == std::string::npos) {
+            // 4IFIR CHANGE: arguments are parsed FROM THE END, not from the start.
+            // The two indices are always the last two arguments, so everything before them
+            // is the subject string - and that string may itself contain commas. Parsing
+            // from the start made such a value unusable: only the part before its first
+            // comma was ever seen. For values without commas the result is identical.
+            const size_t endComma   = parameters.rfind(',');
+            const size_t startComma = (endComma == std::string::npos || endComma == 0)
+                ? std::string::npos : parameters.rfind(',', endComma - 1);
+            if (endComma == std::string::npos || startComma == std::string::npos) {
                 return NULL_STR;
             }
         
-            std::string strPart    = parameters.substr(0, firstComma);
-            std::string startIndex = parameters.substr(firstComma + 1, secondComma - firstComma - 1);
-            std::string endIndex   = parameters.substr(secondComma + 1);
+            std::string strPart    = parameters.substr(0, startComma);
+            std::string startIndex = parameters.substr(startComma + 1, endComma - startComma - 1);
+            std::string endIndex   = parameters.substr(endComma + 1);
         
             trim(strPart);
             removeQuotes(strPart);
