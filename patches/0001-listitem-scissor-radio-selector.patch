@@ -1,0 +1,67 @@
+diff --git a/libtesla/include/tesla.hpp b/libtesla/include/tesla.hpp
+index a33f877..b448c29 100644
+--- a/libtesla/include/tesla.hpp
++++ b/libtesla/include/tesla.hpp
+@@ -18,6 +18,30 @@
+  *  Copyright (c) 2023-2026 ppkantorski
+  ********************************************************************************/
+ 
++/*  MODIFIED BY THE Ultrahand-4IFIR PROJECT
++ *  ----------------------------------------
++ *  This file is not the upstream original. Changes are marked in place with the
++ *  comment "4IFIR CHANGE" and listed here, as GPL v2 section 2(a) requires.
++ *
++ *  2026-08-28  ListItem::drawTruncatedText no longer lets the scrolling label run
++ *              into the value slot when a Switch2 radio mark occupies it.
++ *
++ *              The scissor width chose between two constants on m_value.empty().
++ *              That asks the wrong question: an unselected radio row carries an
++ *              empty m_value while its circle still occupies the slot, so the row
++ *              took the "nothing on the right, run to the frame edge" branch and
++ *              the label was drawn 15 px into the circle. Selecting the row set a
++ *              checkmark as the value and the overlap vanished, which is probably
++ *              why it went unnoticed.
++ *
++ *              The predicate is now valueSlotOccupied(), which mirrors draw()'s own
++ *              dispatch. Rows whose slot is genuinely empty are unchanged; every
++ *              radio row gains the same 7 px gap ordinary value text already had.
++ *              This is a fix to upstream behaviour, not a project-specific feature.
++ *
++ *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
++ ********************************************************************************/
++
+ /**
+  * Copyright (C) 2020 werwolv
+  *
+@@ -9485,6 +9509,21 @@ namespace tsl {
+             virtual bool switch2ExtendsRight() {
+                 return true;
+             }
++
++            // 4IFIR CHANGE -- see the modification notice at the top of this file.
++            // True when something is actually painted in the value slot on the right.
++            // Mirrors draw()'s own dispatch: the Switch2 radio mark first, otherwise
++            // ordinary value text. An empty m_value is NOT by itself proof the slot is
++            // free -- a radio selector's circle occupies it while carrying no value
++            // text at all (unselected rows have an empty m_value), which is why the
++            // focused-item scissor below must ask this instead of m_value.empty().
++            //
++            // Not virtual: ToggleListItem's slot is drawn through the same
++            // !m_value.empty() branch of draw(), so the base formula already answers
++            // correctly for it and there is nothing to override.
++            bool valueSlotOccupied() const {
++                return !m_value.empty() || (m_flags.m_radioSelector && ult::useSwitch2Style);
++            }
+         private:
+             void calculateWidths(gfx::Renderer* renderer) {
+                 m_maxWidth = getWidth() - valueReservedWidth(renderer);
+@@ -9511,7 +9550,8 @@ namespace tsl {
+                     {
+                         const s32 s2Ext = ult::useSwitch2Style ? 7 : 0;
+                         const s32 scissorX = getX() + 6 - s2Ext;
+-                        const s32 scissorW = m_maxWidth + (m_value.empty() ? 49 : 27)
++                        // 4IFIR CHANGE: predicate was m_value.empty(); see notice at top.
++                        const s32 scissorW = m_maxWidth + (valueSlotOccupied() ? 27 : 49)
+                                              + s2Ext                                    // compensate for left shift
+                                              + (switch2ExtendsRight() ? s2Ext : 0);    // extend right only for non-toggles
+                         renderer->enableScissoring(scissorX, 97, scissorW, tsl::cfg::FramebufferHeight - 170);

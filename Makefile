@@ -254,13 +254,35 @@ ifneq ($(ROMFS),)
 	export NROFLAGS += --romfsdir=$(CURDIR)/$(ROMFS)
 endif
 
-.PHONY: $(BUILD) clean all
+.PHONY: $(BUILD) clean all patch-lib
 
 #---------------------------------------------------------------------------------
 all: $(BUILD)
 
+#---------------------------------------------------------------------------------
+# 4IFIR: our changes to lib/libultrahand live as unified diffs in patches/ and are
+# applied to the submodule right before compiling. They are NOT committed into the
+# submodule, so `git clone --recurse-submodules && make` on this repository
+# reproduces exactly the binary we ship.
+#
+# Idempotent: if a patch is already in the tree, `apply --reverse --check` returns 0
+# and we skip it. If upstream rewrote the surrounding code, `git apply` fails and the
+# build STOPS -- instead of silently compiling an unpatched library, which is the one
+# failure mode that would be impossible to notice afterwards.
+#---------------------------------------------------------------------------------
+patch-lib:
+	@for p in $(CURDIR)/patches/*.patch; do \
+	  [ -e "$$p" ] || continue; \
+	  if git -C lib/libultrahand apply --reverse --check "$$p" 2>/dev/null; then \
+	    echo "patch already applied: $$(basename $$p)"; \
+	  else \
+	    echo "applying patch: $$(basename $$p)"; \
+	    git -C lib/libultrahand apply "$$p" || exit 1; \
+	  fi; \
+	done
 
-$(BUILD):
+
+$(BUILD): patch-lib
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile MAKEFLAGS="$(filter-out -j% -j,$(MAKEFLAGS)) -j"
 
