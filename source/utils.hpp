@@ -48,6 +48,15 @@
  *              mtime- or size-based invalidation is needed - which also avoids
  *              relying on FAT32 timestamp granularity.
  *
+ *  2026-08-30  updateGeneralPlaceholders() is rebuilt at most once per table build
+ *              instead of once per command. Every run reads config.ini and opens and
+ *              closes four system services (nifm, lbl, audctl, ldr:dmnt) plus two IPC
+ *              calls for the title id, none of which keeps its session. One page of a
+ *              real package made 139 such calls - about 695 service open/close pairs
+ *              and 1670 IPC round trips - for values that cannot have changed, because
+ *              buildTableDrawerLines executes no commands and only reads them.
+ *              Outside a table build the behaviour is unchanged.
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -1140,6 +1149,7 @@ namespace ult4ifir {
     struct JsonScope {
         std::vector<std::pair<std::string, std::unique_ptr<json_t, JsonDeleter>>> docs;
         std::vector<std::string> statOk;   // paths already confirmed to exist
+        bool generalsDone = false;         // updateGeneralPlaceholders() already ran here
     };
 
     inline thread_local JsonScope* g_jsonScope = nullptr;
@@ -1169,6 +1179,21 @@ namespace ult4ifir {
         json_t* raw = doc.get();
         if (g_jsonScope && raw) g_jsonScope->docs.emplace_back(path, std::move(doc));
         return raw;
+    }
+
+    // General placeholders are rebuilt before EVERY command, and rebuilding them opens
+    // config.ini and cycles four system services (nifm, lbl, audctl, ldr:dmnt) plus two
+    // IPC calls for the title id. On a table of 83 rows that is hundreds of service
+    // open/close pairs and thousands of IPC round trips for values that cannot change
+    // while the table is being built - no command runs in that window, and the volume,
+    // backlight, IP address and language are read, never written, by it.
+    //
+    // Returns true when the caller still has to rebuild them.
+    inline bool generalsNeedUpdate() {
+        if (!g_jsonScope) return true;          // outside a table build: unchanged behaviour
+        if (g_jsonScope->generalsDone) return false;
+        g_jsonScope->generalsDone = true;
+        return true;
     }
 
     // stat() is not cached anywhere in the engine, and the placeholder lambdas call
@@ -3713,7 +3738,8 @@ bool applyPlaceholderReplacements(std::vector<std::string>& cmd, const std::stri
         {"{if_version_<=(", [](const std::string& ph) { return ifCompare(ph, compareVersions, relLe); }},
     };
 
-    updateGeneralPlaceholders();
+    // 4IFIR CHANGE - once per table build instead of once per command; see above.
+    if (ult4ifir::generalsNeedUpdate()) updateGeneralPlaceholders();
 
     // Iterate through each command and replace placeholders
     for (auto& arg : cmd) {
