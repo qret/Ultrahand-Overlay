@@ -52,8 +52,8 @@
  *              instead of once per command. Every run reads config.ini and opens and
  *              closes four system services (nifm, lbl, audctl, ldr:dmnt) plus two IPC
  *              calls for the title id, none of which keeps its session. One page of a
- *              real package made 139 such calls - about 695 service open/close pairs
- *              and 1670 IPC round trips - for values that cannot have changed, because
+ *              real package made 139 such calls - 556 service open/close pairs, four per
+ *              call - for values that cannot have changed, because
  *              buildTableDrawerLines executes no commands and only reads them.
  *              Outside a table build the behaviour is unchanged.
  *
