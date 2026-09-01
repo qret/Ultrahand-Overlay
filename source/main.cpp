@@ -1092,7 +1092,23 @@ public:
             addListItem(list, LANGUAGE, defaultLang, "languageMenu");
             addListItem(list, NOTIFICATIONS, DROPDOWN_SYMBOL, "notificationsMenu");
             addListItem(list, SYSTEM, DROPDOWN_SYMBOL, "systemMenu");
-            addListItem(list, SOFTWARE_UPDATE, DROPDOWN_SYMBOL, "softwareUpdateMenu");
+            // 4IFIR CHANGE 2026-09-01: the Software Update entry is gone.
+            //
+            // This build is a fork shipped inside someone else's firmware, and it still
+            // carries the upstream version number. The moment upstream tags a newer one,
+            // this screen would announce an update and a single press would replace this
+            // overlay with the upstream build -- silently undoing every change made here.
+            //
+            // The update path is also broader than it looks: on the fallback branch it
+            // unzips the release archive into the ROOT of the SD card, and it swaps the
+            // loader under /atmosphere/contents unless an undocumented flag file exists.
+            //
+            // Removing the entry disables the whole thing, not just its label: the target
+            // name "softwareUpdateMenu" is reachable from nowhere else, so neither the
+            // release-info download on entry nor the update button is ever constructed.
+            //
+            // Updates for this package come through its own channel instead, pointed at
+            // our repository -- see [Check for updates] in the package.
 
             addHeader(list, UI_SETTINGS);
             addListItem(list, THEME, currentTheme, "themeMenu");
@@ -7852,7 +7868,12 @@ void initializeSettingsAndDirectories() {
     ensureDefault("selection_text",           FALSE_STR);
     ensureDefault("selection_value",          FALSE_STR);
     ensureDefault("launch_combos",            TRUE_STR);
-    ensureDefault("sound_effects",            TRUE_STR);
+    // 4IFIR CHANGE 2026-09-01: sound off by default. This line is half of it -- the
+    // other half is the default handed to getBool() in the library, patched alongside.
+    // Both are needed: the library default decides behaviour while the key is absent,
+    // and this line decides what gets written into the config on first run. Leave this
+    // one as TRUE and the library default would hold for exactly one launch.
+    ensureDefault("sound_effects",            FALSE_STR);
     ensureDefault("haptic_feedback",          FALSE_STR);
     ensureDefault("auto_ntp_sync",            TRUE_STR);
     ensureDefault("swipe_to_open",            TRUE_STR);

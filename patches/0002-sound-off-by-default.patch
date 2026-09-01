@@ -1,0 +1,57 @@
+diff --git a/libtesla/source/tesla.cpp b/libtesla/source/tesla.cpp
+index cb49362..c90e7f1 100644
+--- a/libtesla/source/tesla.cpp
++++ b/libtesla/source/tesla.cpp
+@@ -18,6 +18,29 @@
+  *  Copyright (c) 2023-2026 ppkantorski
+  ********************************************************************************/
+ 
++/*  MODIFIED BY THE Ultrahand-4IFIR PROJECT
++ *  ----------------------------------------
++ *  This file is not the upstream original. Changes are marked in place with the
++ *  comment "4IFIR CHANGE" and listed here, as GPL v2 section 2(a) requires.
++ *
++ *  2026-09-01  Sound effects are off by default (the getBool default for the
++ *              "sound_effects" key is now false).
++ *
++ *              This build ships inside another project's firmware, where an overlay
++ *              chirping over a running game is a surprise rather than a feature. The
++ *              key still works exactly as before, and anyone who wants the sounds can
++ *              turn them back on from the Sounds screen; only the starting position
++ *              changed.
++ *
++ *              Two more places carry the same default and are changed to match: the
++ *              static initialiser in libultra/source/tsl_utils.cpp, and the config
++ *              seeding in the overlay's own source. All three must agree -- the
++ *              seeding one writes the key out on first run, so leaving it alone would
++ *              make this default hold for a single launch and then be overwritten.
++ *
++ *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
++ */
++
+ 
+ #include <tesla.hpp>
+ 
+@@ -827,7 +850,8 @@ namespace impl {
+         ult::useNotifications       = getBool("notifications",        true);
+         ult::useNotificationsHotkey = getBool("notifications_hotkey", true);
+         ult::silenceNotifications   = getBool("silence_notifications");
+-        ult::useSoundEffects        = getBool("sound_effects",        true);
++        // 4IFIR CHANGE: sound off by default (was true). See the header of this file.
++        ult::useSoundEffects        = getBool("sound_effects",        false);
+         ult::useHapticFeedback      = getBool("haptic_feedback");
+         ult::useAutoNTPSync         = getBool("auto_ntp_sync",        true);
+         ult::useStickNavigation     = getBool("stick_navigation",     true);
+diff --git a/libultra/source/tsl_utils.cpp b/libultra/source/tsl_utils.cpp
+index 6a94361..41a86dc 100644
+--- a/libultra/source/tsl_utils.cpp
++++ b/libultra/source/tsl_utils.cpp
+@@ -220,7 +220,7 @@ namespace ult {
+     bool useNotificationsHotkey = true;
+     bool useStartupNotification = true;
+     bool silenceNotifications = false;
+-    bool useSoundEffects = true;
++    bool useSoundEffects = false;   // 4IFIR CHANGE: sound off by default (was true)
+     bool useHapticFeedback = false;
+     bool useAutoNTPSync = true;
+     bool useStickNavigation = true;
