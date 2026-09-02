@@ -1,8 +1,8 @@
 diff --git a/libtesla/include/tesla.hpp b/libtesla/include/tesla.hpp
-index a33f877..b448c29 100644
+index a33f877..19c277a 100644
 --- a/libtesla/include/tesla.hpp
 +++ b/libtesla/include/tesla.hpp
-@@ -18,6 +18,30 @@
+@@ -18,6 +18,42 @@
   *  Copyright (c) 2023-2026 ppkantorski
   ********************************************************************************/
  
@@ -10,6 +10,18 @@ index a33f877..b448c29 100644
 + *  ----------------------------------------
 + *  This file is not the upstream original. Changes are marked in place with the
 + *  comment "4IFIR CHANGE" and listed here, as GPL v2 section 2(a) requires.
++ *
++ *  2026-09-02  ListItem::calculateWidths clamps the label width at zero.
++ *
++ *              m_maxWidth is u16 while `getWidth() - valueReservedWidth()` is signed.
++ *              A value wide enough to make that difference negative wrapped the field
++ *              to ~65500, so `truncated` compared false (label drawn in full) and the
++ *              value's x position went far off-screen (value drawn nowhere). On our
++ *              package this hid the footer of every item whose value read
++ *              "eBamatic - Default (automatic)", in both the CPU and GPU sections.
++ *
++ *              Clamping restores the intended degradation: the label truncates and
++ *              the value stays on screen.
 + *
 + *  2026-08-28  ListItem::drawTruncatedText no longer lets the scrolling label run
 + *              into the value slot when a Switch2 radio mark occupies it.
@@ -33,7 +45,7 @@ index a33f877..b448c29 100644
  /**
   * Copyright (C) 2020 werwolv
   *
-@@ -9485,6 +9509,21 @@ namespace tsl {
+@@ -9485,9 +9521,35 @@ namespace tsl {
              virtual bool switch2ExtendsRight() {
                  return true;
              }
@@ -54,8 +66,23 @@ index a33f877..b448c29 100644
 +            }
          private:
              void calculateWidths(gfx::Renderer* renderer) {
-                 m_maxWidth = getWidth() - valueReservedWidth(renderer);
-@@ -9511,7 +9550,8 @@ namespace tsl {
+-                m_maxWidth = getWidth() - valueReservedWidth(renderer);
++                // 4IFIR CHANGE: clamp at zero; see the modification notice at the top.
++                //
++                // m_maxWidth is u16, the subtraction is signed. A value wide enough that
++                // valueReservedWidth() exceeds the row width made the difference negative
++                // and the store wrapped it to ~65500. Two things then went wrong at once,
++                // which is why this was so hard to recognise on the console: the label
++                // compared as "fits" and drew in full, while the value's x position landed
++                // tens of thousands of pixels off-screen and the value simply vanished --
++                // no ellipsis, no overlap, no clue. Clamped, an over-long value now
++                // truncates the label instead, which is visible and therefore fixable.
++                const s32 available = getWidth() - valueReservedWidth(renderer);
++                m_maxWidth = available > 0 ? static_cast<u16>(available) : 0;
+             
+                 const u16 width = renderer->getTextDimensions(m_text_clean, false, 23).first;
+                 m_flags.m_truncated = width > m_maxWidth + 20;
+@@ -9511,7 +9573,8 @@ namespace tsl {
                      {
                          const s32 s2Ext = ult::useSwitch2Style ? 7 : 0;
                          const s32 scissorX = getX() + 6 - s2Ext;
