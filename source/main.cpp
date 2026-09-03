@@ -4288,6 +4288,8 @@ public:
         } else {
            rootFrame = new tsl::elm::OverlayFrame(
                (!packageHeader.title.empty()) ? packageHeader.title : (!packageRootLayerTitle.empty() ? packageRootLayerTitle : getNameFromPath(filePath)),
+               // 4IFIR CHANGE - ";subtitle=" wins over the inherited parent header.
+               !packageHeader.subtitle.empty() ? packageHeader.subtitle :
                !lastPackageHeader.empty() ? lastPackageHeader : (packageHeader.version != "" ? (!packageRootLayerVersion.empty() ? packageRootLayerVersion : packageHeader.version) + "  Ultrahand Package" : "Ultrahand Package"),
                noClickableItems,
                "",
@@ -6311,7 +6313,9 @@ public:
 
         auto* rootFrame = new tsl::elm::OverlayFrame(
            (!packageHeader.title.empty()) ? packageHeader.title : (!packageRootLayerTitle.empty() ? packageRootLayerTitle : getNameFromPath(packagePath)),
-           ((!pageHeader.empty() && packageHeader.show_version != TRUE_STR) ? pageHeader: (packageHeader.version != "" ? (!packageRootLayerVersion.empty() ? packageRootLayerVersion : packageHeader.version) + " "+DIVIDER_SYMBOL+" Ultrahand Package" : "Ultrahand Package")),
+           // 4IFIR CHANGE - ";subtitle=" wins over the inherited parent header.
+           ((!packageHeader.subtitle.empty() && packageHeader.show_version != TRUE_STR) ? packageHeader.subtitle :
+            (!pageHeader.empty() && packageHeader.show_version != TRUE_STR) ? pageHeader: (packageHeader.version != "" ? (!packageRootLayerVersion.empty() ? packageRootLayerVersion : packageHeader.version) + " "+DIVIDER_SYMBOL+" Ultrahand Package" : "Ultrahand Package")),
            noClickableItems,
            "",
            packageHeader.color,

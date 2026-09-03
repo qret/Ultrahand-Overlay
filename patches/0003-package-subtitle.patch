@@ -1,0 +1,36 @@
+diff --git a/libultra/include/ini_funcs.hpp b/libultra/include/ini_funcs.hpp
+index a0f37de..5e24d47 100644
+--- a/libultra/include/ini_funcs.hpp
++++ b/libultra/include/ini_funcs.hpp
+@@ -48,6 +48,11 @@ namespace ult {
+     struct PackageHeader {
+         std::string title;
+         std::string display_title;
++        // 4IFIR CHANGE - subtitle line of a screen, set by ";subtitle=" in the package
++        // header. Without it a sub-package cannot name its own screen at all: the engine
++        // takes the subtitle from the LAST header in the PARENT list, so a screen whose
++        // parent has no header shows either the internal word "Commands" or the version.
++        std::string subtitle;
+         std::string version;
+         std::string creator;
+         std::string about;
+@@ -59,6 +64,7 @@ namespace ult {
+         void clear() {
+             title.clear();
+             display_title.clear();
++            subtitle.clear();
+             version.clear();
+             creator.clear();
+             about.clear();
+diff --git a/libultra/source/ini_funcs.cpp b/libultra/source/ini_funcs.cpp
+index ca60949..3ce9239 100644
+--- a/libultra/source/ini_funcs.cpp
++++ b/libultra/source/ini_funcs.cpp
+@@ -77,6 +77,7 @@ namespace ult {
+         const std::pair<std::string_view, std::string*> fieldMap[] = {
+             {";title=", &packageHeader.title},
+             {";display_title=", &packageHeader.display_title},
++            {";subtitle=", &packageHeader.subtitle},   // 4IFIR CHANGE
+             {";version=", &packageHeader.version},
+             {";creator=", &packageHeader.creator},
+             {";about=", &packageHeader.about},
