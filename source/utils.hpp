@@ -33,6 +33,15 @@
  *              scanning, which is not needed here - the packed values this project
  *              reads are fixed-width, so {slice(...)} is enough.
  *
+ *  2026-09-03  The "null" fallback of {json_file(...)} and friends is now looked up in
+ *              the container the missing key was searched in, not in the document root.
+ *              A dictionary shaped as an array holding one object - [ { "null": "-", ... } ],
+ *              addressed as {json_file(0,KEY)} - could never reach its own fallback: the
+ *              lookup was done on the array, and an array has no named children, so
+ *              cJSON_GetObjectItemCaseSensitive always returned NULL. The literal "null"
+ *              was appended instead, which the caller renders as "Not available".
+ *              Dictionaries with an object at the root behave exactly as before.
+ *
  *  2026-08-30  {json_file(...)} documents are cached for the duration of ONE table
  *              build, and the existence check in front of {json_file(...)} and
  *              {hex_file(...)} is remembered for the same span. Every occurrence used
@@ -2433,7 +2442,6 @@ std::string replaceJsonPlaceholder(const std::string& arg, const std::string& co
     std::string key;
     bool validValue;
     
-    // Keep reference to root for "null" fallback lookups
     cJSON* root = reinterpret_cast<cJSON*>(jsonDict);
     
     while (startPos != std::string::npos) {
@@ -2447,6 +2455,9 @@ std::string replaceJsonPlaceholder(const std::string& arg, const std::string& co
         
         nextPos = startPos + searchStringLen;
         cJSON* value = root; // Start from root
+        // 4IFIR CHANGE — the "null" fallback is looked up in the container the last key
+        // was searched in, not in the document root. See the modification notice above.
+        cJSON* fallbackScope = root;
         validValue = true;
         
         while (nextPos < endPos && validValue) {
@@ -2457,6 +2468,10 @@ std::string replaceJsonPlaceholder(const std::string& arg, const std::string& co
             
             // Reuse string capacity for key
             key.assign(arg, nextPos, commaPos - nextPos);
+            
+            // 4IFIR CHANGE — remember where this key is looked up. Guarded: a NULL here
+            // would throw away the last real container and put us back to no fallback.
+            if (value) fallbackScope = value;
             
             if (cJSON_IsObject(value)) {
                 value = cJSON_GetObjectItemCaseSensitive(value, key.c_str()); // Navigate through object
@@ -2509,7 +2524,8 @@ std::string replaceJsonPlaceholder(const std::string& arg, const std::string& co
             result.append(cJSON_IsTrue(value) ? TRUE_STR : FALSE_STR);
         } else {
             // Key doesn't exist or isn't a string - try "null" fallback
-            cJSON* fallbackValue = cJSON_GetObjectItemCaseSensitive(root, NULL_STR.c_str());
+            // 4IFIR CHANGE — search fallbackScope, not root.
+            cJSON* fallbackValue = cJSON_GetObjectItemCaseSensitive(fallbackScope, NULL_STR.c_str());
             if (fallbackValue && cJSON_IsString(fallbackValue) && fallbackValue->valuestring) {
                 result.append(fallbackValue->valuestring);
             } else {
