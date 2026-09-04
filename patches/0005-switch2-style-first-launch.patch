@@ -1,0 +1,38 @@
+--- a/libtesla/source/tesla.cpp
++++ b/libtesla/source/tesla.cpp
+@@ -38,6 +38,22 @@
+  *              seeding one writes the key out on first run, so leaving it alone would
+  *              make this default hold for a single launch and then be overwritten.
+  *
++ *  2026-09-04  "switch_2_style" defaults to true here, matching what the overlay
++ *              seeds into config.ini.
++ *
++ *              The two defaults disagreed upstream: this getBool said false, while
++ *              ensureDefault() in the overlay's own source writes TRUE_STR. Settings
++ *              are parsed before the seeding runs, and seeding only touches the file,
++ *              never the variable -- so a clean install rendered its entire first
++ *              session in the classic flat style while config.ini already said true,
++ *              and switched to the Switch 2 style from the second launch on. Worse,
++ *              opening the overlay settings during that first session re-parsed the
++ *              file and flipped the style mid-session.
++ *
++ *              Same trap as the sound default above, and the fix is the same shape:
++ *              make the library default agree with the seeded one. Every other
++ *              boolean setting was checked mechanically; this was the only mismatch.
++ *
+  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
+  */
+ 
+@@ -887,7 +903,11 @@
+         ult::centerWidgetAlignment  = getBool("center_widget_alignment", true);
+         ult::extendedWidgetBackdrop = getBool("extended_widget_backdrop");
+         ult::useDynamicLogo         = getBool("dynamic_logo",            false);
+-        ult::useSwitch2Style        = getBool("switch_2_style",          false);
++        // 4IFIR CHANGE 2026-09-04: true, not false -- see the modification notice at
++        // the top of this file. ensureDefault() seeds "switch_2_style" as true, and a
++        // library default of false made the first launch after a clean install render
++        // in the old style while the file on disk already said otherwise.
++        ult::useSwitch2Style        = getBool("switch_2_style",          true);
+         ult::useDynamicTableColors  = getBool("dynamic_tables",          true);
+         ult::useSelectionBG         = getBool("selection_bg",            true);
+         ult::useSelectionText       = getBool("selection_text");
