@@ -1,0 +1,18 @@
+diff --git a/libtesla/source/tesla.cpp b/libtesla/source/tesla.cpp
+index c90e7f1..251b1a1 100644
+--- a/libtesla/source/tesla.cpp
++++ b/libtesla/source/tesla.cpp
+@@ -1465,7 +1465,12 @@ s32 NotificationPrompt::getEffectiveHeight(const Slot& slot) const {
+         wrapMax = 4;
+     } else {
+         wrapW   = static_cast<float>(g.textAreaW - 4 - NOTIF_WRAP_MARGIN);
+-        wrapMax = 9;
++        // 4IFIR CHANGE 2026-09-04: cap at 8, not 9. drawSlot() ellipsises the body text
++        // down to 8 lines, so a 9-line reservation here made the layout pass and the
++        // drawing pass disagree on the height of the same slot: the stack left a blank
++        // band of one line under a long notification, and the "does it still fit on
++        // screen" test could pass in one pass and fail in the other.
++        wrapMax = 8;
+     }
+ 
+     const Lines lines = getWrappedLines(slot.data.text, wrapW, slot.data.fontSize, wrapMax,
