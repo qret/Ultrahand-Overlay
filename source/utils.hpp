@@ -1172,6 +1172,36 @@ namespace ult4ifir {
         JsonScopeGuard& operator=(const JsonScopeGuard&) = delete;
     };
 
+    /*  4IFIR CHANGE 2026-09-05 -- page scope, one level above the table scope.
+     *
+     *  WHY. The table scope above already collapsed the per-command rebuild of the
+     *  general placeholders to one per table. A page still pays for it once per table
+     *  SECTION -- 21 on one screen of our package -- plus once per ;header_indent=
+     *  table through getFirstSectionText(), which runs outside any scope at all. Each
+     *  rebuild opens and closes nifm, ldr:dmnt, audctl and lbl: about 21 IPC a time.
+     *
+     *  WHY THIS IS SAFE, and it is the same reason one step wider: drawCommandsMenu()
+     *  runs no package command. It reads files and builds list items; the only thing
+     *  it writes is the package's own config.ini, and these values do not come from
+     *  there -- they come from the OVERLAY config and from system services.
+     *
+     *  DO NOT widen the {ini_file}/{json_file} document cache to this scope for
+     *  exactly that reason: that write is real, and a document cached across it would
+     *  serve a stale footer.
+     */
+    struct PageScope { bool generalsDone = false; };
+
+    inline thread_local PageScope* g_pageScope = nullptr;
+
+    struct PageScopeGuard {
+        PageScope  scope;
+        PageScope* prev;
+        PageScopeGuard() : prev(g_pageScope) { g_pageScope = &scope; }
+        ~PageScopeGuard() { g_pageScope = prev; }
+        PageScopeGuard(const PageScopeGuard&) = delete;
+        PageScopeGuard& operator=(const PageScopeGuard&) = delete;
+    };
+
     // Already parsed in this scope? The path list is short (one table's worth of
     // distinct dictionaries), so a linear scan beats a hash map here.
     inline json_t* scopeFind(const std::string& path) {
@@ -1199,6 +1229,13 @@ namespace ult4ifir {
     //
     // Returns true when the caller still has to rebuild them.
     inline bool generalsNeedUpdate() {
+        // 4IFIR CHANGE 2026-09-05: a page scope, when one is open, answers first --
+        // once for the whole screen instead of once per table on it.
+        if (g_pageScope) {
+            if (g_pageScope->generalsDone) return false;
+            g_pageScope->generalsDone = true;
+            return true;
+        }
         if (!g_jsonScope) return true;          // outside a table build: unchanged behaviour
         if (g_jsonScope->generalsDone) return false;
         g_jsonScope->generalsDone = true;
@@ -4921,7 +4958,20 @@ void processCommand(const std::vector<std::string>& cmd, const std::string& pack
                     deleteFileOrDirectory(defaultLogFilePath);
                     #endif
                 } else if (clearOption == "hex_sum_cache") {
-                    hexSumCache.clear();
+                    // 4IFIR CHANGE 2026-09-05: call the guarded clearer instead of
+                    // touching the map directly. This command runs on the interpreter
+                    // thread while the UI thread reads the same unordered_map under a
+                    // shared_lock -- {hex_file(...)} substitutions and every
+                    // ;visibility_condition=matching_hex_val_custom go through
+                    // parseHexDataAtCustomOffset. An unguarded clear() concurrent with
+                    // another thread's find() is undefined behaviour, and packages do
+                    // issue this command: ours calls it from four different files.
+                    // clearHexSumCache() takes the write lock the map was designed for.
+                    clearHexSumCache();
+                    // 4IFIR CHANGE 2026-09-05: drop the byte window too. Packages issue
+                    // this command after replacing loader.kip wholesale (copy/unzip/
+                    // download), which does not go through hexEditByOffset().
+                    clearHexReadScope();
                 }
                 return;
             }

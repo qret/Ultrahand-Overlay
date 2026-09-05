@@ -1,0 +1,145 @@
+diff --git a/libultra/include/hex_funcs.hpp b/libultra/include/hex_funcs.hpp
+index 5ca7f2a..a43a09c 100644
+--- a/libultra/include/hex_funcs.hpp
++++ b/libultra/include/hex_funcs.hpp
+@@ -59,6 +59,40 @@ namespace ult {
+     extern void clearHexSumCache();
+     extern size_t getHexSumCacheSize();
+ 
++    /*  4IFIR CHANGE 2026-09-05 -- anchor-window byte cache, scoped to one page build.
++     *
++     *  WHY. parseHexDataAtCustomOffset() caches only the anchor offset (hexSumCache);
++     *  the bytes are re-read with a fresh fopen/fseek/fread/fclose on EVERY
++     *  substitution. One summary page of a real package does 83 such opens of the same
++     *  440 KB loader.kip: 71 from {hex_file(...)} rows and 12 from
++     *  ;visibility_condition= checks that all read the very same single byte. Each open
++     *  is four IPC to fsp-srv, two of them re-walking the path through FAT.
++     *
++     *  WHY THIS IS SAFE. The scope is opened by drawCommandsMenu() and closed when it
++     *  returns; that function runs no package command, it reads files and builds list
++     *  items. Every in-place write funnels through hexEditByOffset(), which drops the
++     *  window, and the "clear hex_sum_cache" script command drops it too. The scope
++     *  depth is thread_local, so the interpreter thread -- the one that actually writes
++     *  -- never has a scope open and always reads from disk. With no scope open the
++     *  behaviour is byte for byte the old one.
++     *
++     *  A WINDOW, NOT THE FILE. 16 KB from the anchor covers every offset a package is
++     *  known to use (the largest ours touches is 12529). Anything outside falls through
++     *  to the plain read, unchanged.
++     */
++    inline constexpr size_t HEX_SCOPE_WINDOW = 16384;
++
++    void beginHexReadScope();
++    void endHexReadScope();
++    void clearHexReadScope();
++
++    struct HexReadScopeGuard {
++        HexReadScopeGuard()  { beginHexReadScope(); }
++        ~HexReadScopeGuard() { endHexReadScope(); }
++        HexReadScopeGuard(const HexReadScopeGuard&) = delete;
++        HexReadScopeGuard& operator=(const HexReadScopeGuard&) = delete;
++    };
++
+     /**
+      * @brief Converts an ASCII string to a hexadecimal string.
+      *
+diff --git a/libultra/source/hex_funcs.cpp b/libultra/source/hex_funcs.cpp
+index d6f9959..53b0220 100644
+--- a/libultra/source/hex_funcs.cpp
++++ b/libultra/source/hex_funcs.cpp
+@@ -44,6 +44,25 @@ namespace ult {
+         return hexSumCache.size();
+     }
+ 
++    // 4IFIR CHANGE 2026-09-05 -- the anchor window itself; hex_funcs.hpp says why.
++    // thread_local on purpose: only the UI thread ever opens a scope, so a command's
++    // write is never served from a stale window.
++    namespace {
++        struct HexWindow {
++            std::string                key;    // filePath '?' pattern '?' occurrence
++            long                       base = 0;
++            std::vector<unsigned char> bytes;
++        };
++        thread_local std::vector<HexWindow> t_hexWindows;
++        thread_local int                    t_hexScopeDepth = 0;
++    }
++
++    void beginHexReadScope() { ++t_hexScopeDepth; }
++    void endHexReadScope() {
++        if (--t_hexScopeDepth <= 0) { t_hexScopeDepth = 0; t_hexWindows.clear(); }
++    }
++    void clearHexReadScope() { t_hexWindows.clear(); }
++
+     /**
+      * @brief Converts an ASCII string to a hexadecimal string.
+      *
+@@ -315,6 +334,19 @@ namespace ult {
+     void hexEditByOffset(const std::string& filePath, const std::string& offsetStr, const std::string& hexData) {
+         // Lock file writes to prevent concurrent modifications to the same file
+         std::lock_guard<std::mutex> fileWriteLock(fileWriteMutex);
++        // 4IFIR CHANGE 2026-09-05: drop this thread's window. Every in-place hex write
++        // funnels through here, so this one line also covers hexEditByCustomOffset()
++        // and hexEditFindReplace().
++        //
++        // BE HONEST ABOUT WHAT THIS DOES. The window is thread_local, and writes happen
++        // on the interpreter thread, which never opens a scope -- so on that thread this
++        // clears an already empty vector. It is a safety net for a future caller that
++        // writes while a scope is open on the SAME thread, not the thing that keeps the
++        // UI correct. What keeps the UI correct is two facts, and they are the ones to
++        // preserve if this code is ever moved: drawCommandsMenu() executes no package
++        // command, and a command that changes the kip triggers a page rebuild, which
++        // ends the scope and empties the window.
++        clearHexReadScope();
+         const std::streampos offset = std::stoll(offsetStr);
+         
+         // Open the file for both reading and writing in binary mode
+@@ -526,7 +558,48 @@ namespace ult {
+         }
+ 
+         const std::streampos totalOffset = hexSum + std::stoll(offsetStr);
+-        
++
++        // 4IFIR CHANGE 2026-09-05: serve from the page's anchor window when a scope is
++        // open. Filled once per (file, pattern, occurrence); a request that does not fit
++        // entirely inside it drops through to the plain read below, unchanged. The bounds
++        // test is deliberately strict -- getting it wrong would show a plausible WRONG
++        // voltage rather than an error, and this is a tuner.
++        if (t_hexScopeDepth > 0) {
++            const HexWindow* win = nullptr;
++            for (const auto& w : t_hexWindows)
++                if (w.key == cacheKey) { win = &w; break; }
++
++            if (!win) {
++                HexWindow w;
++                w.key  = cacheKey;
++                w.base = static_cast<long>(hexSum);
++                FILE* wf = fopen(filePath.c_str(), "rb");
++                if (wf) {
++                    if (fseek(wf, w.base, SEEK_SET) == 0) {
++                        w.bytes.resize(HEX_SCOPE_WINDOW);
++                        w.bytes.resize(fread(w.bytes.data(), 1, HEX_SCOPE_WINDOW, wf));
++                    }
++                    fclose(wf);
++                }
++                // Pushed even when empty, so a file that cannot be read is not retried
++                // once per substitution for the rest of the page.
++                t_hexWindows.push_back(std::move(w));
++                win = &t_hexWindows.back();
++            }
++
++            const long want = static_cast<long>(totalOffset);
++            if (want >= win->base &&
++                want + static_cast<long>(length) <= win->base + static_cast<long>(win->bytes.size())) {
++                std::string cached(length * 2, '\0');
++                const unsigned char* src = win->bytes.data() + (want - win->base);
++                for (size_t i = 0; i < length; ++i) {
++                    cached[i * 2]     = hexLookup[(src[i] >> 4) & 0xF];
++                    cached[i * 2 + 1] = hexLookup[src[i] & 0xF];
++                }
++                return cached;
++            }
++        }
++
+         // Pre-allocate final string size to avoid reallocation
+         std::string result;
+         result.reserve(length * 2);

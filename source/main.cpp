@@ -4776,8 +4776,15 @@ bool drawCommandsMenu(
     bool isMini;
     const bool isDocked = ult::consoleIsDocked();
 
-    // update general placeholders
-    updateGeneralPlaceholders();
+    // 4IFIR CHANGE 2026-09-05: the general placeholders are rebuilt once for the whole
+    // page instead of once per table on it -- see ult4ifir::PageScopeGuard. The guard is
+    // a stack object of this function, so it dies when the page is built; a polling table
+    // refreshing itself later falls back to the table scope and still gets fresh values.
+    ult4ifir::PageScopeGuard pageScopeGuard;
+    // 4IFIR CHANGE 2026-09-05: the kip read window lives for exactly one page build;
+    // see hex_funcs.hpp. 83 opens of the same file on the summary page collapse to one.
+    ult::HexReadScopeGuard hexReadScopeGuard;
+    if (ult4ifir::generalsNeedUpdate()) updateGeneralPlaceholders();
 
     std::vector<std::pair<std::string, std::vector<std::vector<std::string>>>> options = loadOptionsFromIni(packageIniPath);
     for (size_t i = 0; i < options.size(); ++i) {
@@ -5419,7 +5426,20 @@ bool drawCommandsMenu(
             }
 
             
-            if (isFile(packageConfigIniPath)) {
+            // 4IFIR CHANGE 2026-09-05: a table has no state in config.ini, so do not read
+            // the file for one. This block touches exactly three things -- commandFooter,
+            // commandFooterHighlight and packageConfigData -- and the TABLE_STR branch below
+            // uses none of them: addTable() has no footer parameter at all, and
+            // ;visibility_condition= is evaluated earlier, from the placeholders, never from
+            // the package config. Every section pays for this today, [Gap] and [Header]
+            // included; one summary page of our package has 27 of them, the first page 23.
+            //
+            // It also stops a side effect: syncIniValue() with an empty footer CREATES an
+            // empty footer= key for the section, so drawing a screen was writing junk
+            // sections into the user's config.ini for tables that can never show a footer.
+            if (commandMode == TABLE_STR) {
+                // nothing to load and nothing to seed for a table
+            } else if (isFile(packageConfigIniPath)) {
                 packageConfigData = getParsedDataFromIniFile(packageConfigIniPath);
                 
                 bool shouldSaveINI = false;
