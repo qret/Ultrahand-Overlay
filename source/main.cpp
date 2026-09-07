@@ -1333,133 +1333,26 @@ public:
             
             tableData.clear();
 
-            // Get system memory info
-            u64 RAM_Used_system_u, RAM_Total_system_u;
-            svcGetSystemInfo(&RAM_Used_system_u, 1, INVALID_HANDLE, 2);
-            svcGetSystemInfo(&RAM_Total_system_u, 0, INVALID_HANDLE, 2);
-            
-            char ramString[24];
-            const float freeRamMB = static_cast<float>(RAM_Total_system_u - RAM_Used_system_u) / (1024.0f * 1024.0f);
-            snprintf(ramString, sizeof(ramString), "%.2f MB %s", freeRamMB, FREE.c_str());
-            
-            const char* ramColor = freeRamMB >= 9.0f ? "healthy_ram" : (freeRamMB >= 5.0f ? "neutral_ram" : "bad_ram");
-            
-            auto* systemMemoryHeader = new tsl::elm::CategoryHeader(SYSTEM_RAM);
-            systemMemoryHeader->setValue(ramString, getRawColor(ramColor, tsl::infoTextColor));
-            list->addItem(systemMemoryHeader);
-            
-            // Read custom overlay memory from INI
-            const std::string customMemoryStr = parseValueFromIniSection(ULTRAHAND_CONFIG_INI_PATH, MEMORY_STR, "custom_overlay_memory_MB");
-            
-            u32 customMemoryMB = 0;
-            bool hasIniEntry = false;
-            
-            if (!customMemoryStr.empty()) {
-                bool isValid = true;
-                for (char c : customMemoryStr) {
-                    if (c < '0' || c > '9') { isValid = false; break; }
-                }
-                if (isValid) {
-                    const int parsedValue = std::atoi(customMemoryStr.c_str());
-                    if (parsedValue > 8 && parsedValue % 2 == 0) {
-                        customMemoryMB = static_cast<u32>(parsedValue);
-                        heapSizeCache.customSizeMB = customMemoryMB;
-                        hasIniEntry = true;
-                    }
-                }
-            }
-            
-            const u32 currentHeapMB = bytesToMB(static_cast<u64>(currentHeapSize));
-            
-            if (!hasIniEntry && currentHeapMB > 8)
-                customMemoryMB = currentHeapMB;
-            
-            std::vector<std::string> heapSizeLabels = {"4 MB", "6 MB", "8 MB"};
-            if (customMemoryMB > 8)
-                heapSizeLabels.push_back(std::to_string(customMemoryMB) + " MB");
-            
-            auto* heapTrackbar = new tsl::elm::NamedStepTrackBarV2(
-                OVERLAY_MEMORY, "", heapSizeLabels,
-                nullptr, nullptr, {}, "",
-                false, false
-            );
-            
-            u8 initialStep = 1;
-            if      (currentHeapMB == 4)                                   initialStep = 0;
-            else if (currentHeapMB == 6)                                   initialStep = 1;
-            else if (currentHeapMB == 8)                                   initialStep = 2;
-            else if (customMemoryMB > 8 && currentHeapMB == customMemoryMB) initialStep = 3;
-            
-            auto lastSliderMB = std::make_shared<u32>(currentHeapMB);
-            
-            heapTrackbar->setSimpleCallback([this, systemMemoryHeader, freeRamMB, lastSliderMB, customMemoryMB, hasIniEntry](s16 value, s16 index) {
-                // Deduplicated: update RAM header display from a free-RAM value
-                const auto updateRamDisplay = [&](float freeMB) {
-                    char buf[24];
-                    snprintf(buf, sizeof(buf), "%.2f MB %s", freeMB, FREE.c_str());
-                    const char* color = freeMB >= 9.0f ? "healthy_ram" : (freeMB >= 5.0f ? "neutral_ram" : "bad_ram");
-                    systemMemoryHeader->setValue(buf, getRawColor(color, tsl::infoTextColor));
-                };
-            
-                u64 newHeapBytes;
-                u32 newMB;
-                switch (index) {
-                    case 0: newHeapBytes = 0x400000; newMB = 4; break;
-                    case 1: newHeapBytes = 0x600000; newMB = 6; break;
-                    case 2: newHeapBytes = 0x800000; newMB = 8; break;
-                    case 3:
-                        if (hasIniEntry && customMemoryMB > 8) {
-                            newHeapBytes = mbToBytes(customMemoryMB);
-                            newMB = customMemoryMB;
-                        } else return;
-                        break;
-                    default: return;
-                }
-            
-                const u32 previousSliderMB = *lastSliderMB;
-                if (newMB == previousSliderMB) return;
-            
-                const u32 oldMB = bytesToMB(static_cast<u64>(currentHeapSize));
-                const float freeAfterHeapMB = freeRamMB + static_cast<float>(oldMB) - static_cast<float>(newMB);
-            
-                // Reject if growing beyond safe threshold
-                if (newMB > oldMB) {
-                    constexpr float SAFETY_MARGIN_MB = 5.0f;
-                    if (static_cast<float>(newMB) > (freeRamMB + static_cast<float>(oldMB) - SAFETY_MARGIN_MB)) {
-                        updateRamDisplay(freeAfterHeapMB);
-                        if (tsl::notification)
-                            tsl::notification->showNow(NOTIFY_HEADER + NOT_ENOUGH_MEMORY, 23);
-                        this->exitOnBack = false;
-                        *lastSliderMB = newMB;
-                        return;
-                    }
-                }
-            
-                const OverlayHeapSize newHeapSize = static_cast<OverlayHeapSize>(newHeapBytes);
-                setOverlayHeapSize(newHeapSize);
-                this->exitOnBack = (currentHeapSize != newHeapSize);
-            
-                updateRamDisplay(freeAfterHeapMB);
-                *lastSliderMB = newMB;
-            
-                if (tsl::notification) {
-                    if (newMB < previousSliderMB) {
-                        if (previousSliderMB >= 6 && newMB < 6)
-                            tsl::notification->showNow(NOTIFY_HEADER + WALLPAPER_SUPPORT_DISABLED, 23);
-                        //else if (previousSliderMB >= 4 && newMB < 4)
-                        //    tsl::notification->showNow(NOTIFY_HEADER + SOUND_SUPPORT_DISABLED, 23);
-                    } else {
-                        if (previousSliderMB < 6 && newMB >= 6)
-                            tsl::notification->showNow(NOTIFY_HEADER + WALLPAPER_SUPPORT_ENABLED, 23);
-                        //else if (previousSliderMB < 4 && newMB >= 4)
-                        //    tsl::notification->showNow(NOTIFY_HEADER + SOUND_SUPPORT_ENABLED, 23);
-                    }
-                }
-            });
-            
-            heapTrackbar->setProgress(initialStep);
-            heapTrackbar->disableClickAnimation();
-            list->addItem(heapTrackbar);
+            // 4IFIR CHANGE 2026-09-07: the whole System RAM section is gone -- the
+            // "N MB free" header and the Overlay Memory trackbar that sat under it.
+            //
+            // The trackbar's only side effect was writing
+            // sdmc:/config/nx-ovlloader/heap_size.bin, and the loader does not read that
+            // file -- the name does not occur in its binary at all. So the 4/6/8 MB steps
+            // moved no memory. What they did move is this engine's own idea of how much
+            // memory it has, and that idea is load-bearing: limitedMemory/expandedMemory
+            // gate the wallpaper, set the list-item cap, and size internal buffers. A
+            // control that silently rewrites those limits while changing nothing
+            // underneath is worse than no control. The custom_overlay_memory_MB ini key
+            // it read goes inert with it -- the engine only ever read that key, it never
+            // wrote it.
+            //
+            // The header follows it out. Its number came from svcGetSystemInfo with
+            // sub-id 2: free space in the System memory pool that every sysmodule shares,
+            // not this overlay's heap. And its healthy/neutral/bad thresholds were sized
+            // for a heap the trackbar could still move. Under a heading that says RAM,
+            // a figure that measures something else and that nothing on this screen can
+            // change reads as a verdict on the overlay. Better off the screen.
 
             addGap(list, 12);
 
