@@ -58,6 +58,41 @@ static std::string mainMenuLeftItem;  // cursor for the left tab (overlays or pa
 static std::string mainMenuRightItem; // cursor for the right tab
 // Per-nesting-level page cursors for PackageMenu: .first = left page, .second = right page
 static std::vector<std::pair<std::string,std::string>> pkgPageCursors;
+// 4IFIR CHANGE 2026-09-13: cursors of pages 3..N, [nesting level][page index - 2]. Pages
+// 1 and 2 stay in pkgPageCursors, so the "open" return file keeps its original layout.
+static std::vector<std::vector<std::string>> pkgExtraPageCursors;
+
+// 4IFIR CHANGE 2026-09-13: package page ids for N pages -- "left", "right", then
+// "page3", "page4", ... The first two keep the upstream ids.
+static std::string pageIdForIndex(size_t index) {
+    if (index == 0) return LEFT_STR;
+    if (index == 1) return RIGHT_STR;
+    return "page" + ult::to_string(static_cast<int>(index + 1));
+}
+
+static size_t pageIndexOf(const std::string& page) {
+    if (page == LEFT_STR) return 0;
+    if (page == RIGHT_STR) return 1;
+    if (page.size() > 4 && page.size() <= 8 && page.compare(0, 4, "page") == 0 && page[4] != '0') {
+        const std::string digits = page.substr(4);
+        if (std::all_of(digits.begin(), digits.end(), ::isdigit)) {
+            const size_t index = static_cast<size_t>(std::strtoul(digits.c_str(), nullptr, 10)) - 1;
+            if (index >= 2 && pageIdForIndex(index) == page) return index;
+        }
+    }
+    return std::string::npos;
+}
+
+// Cursor memory of one page at one nesting level; grows the storage on demand.
+static std::string& pageCursorSlot(size_t layer, size_t index) {
+    while (pkgPageCursors.size() <= layer) pkgPageCursors.emplace_back("", "");
+    if (index == 0) return pkgPageCursors[layer].first;
+    if (index == 1) return pkgPageCursors[layer].second;
+    while (pkgExtraPageCursors.size() <= layer) pkgExtraPageCursors.emplace_back();
+    auto& row = pkgExtraPageCursors[layer];
+    if (row.size() < index - 1) row.resize(index - 1);
+    return row[index - 2];
+}
 
 // Mirrors of the currently-active PackageMenu's navigation context, refreshed every time
 // PackageMenu::createUI() runs (see below). Read by captureOpenReturnContext() to snapshot
@@ -3143,6 +3178,14 @@ static void captureOpenReturnContext() {
     // "Tetris" on Overlays), it would land on the first item, indistinguishable from the tab
     // never having been visited at all.
     fprintf(file, "%s\n%s\n", mainMenuLeftItem.c_str(), mainMenuRightItem.c_str());
+    // 4IFIR CHANGE 2026-09-13: optional tail -- cursors of pages 3..N per nesting level.
+    // A reader that stops at the line above (the older engine) never sees it.
+    fprintf(file, "%zu\n", pkgExtraPageCursors.size());
+    for (const auto& row : pkgExtraPageCursors) {
+        fprintf(file, "%zu\n", row.size());
+        for (const auto& cursor : row)
+            fprintf(file, "%s\n", cursor.c_str());
+    }
     fclose(file);
 }
 
@@ -3152,6 +3195,7 @@ struct OpenReturnContextData {
     std::vector<std::pair<std::string,std::string>> pageCursors; // restore into pkgPageCursors, indexed by nesting level
     std::string mainMenuLeftItem;  // restore into the global of the same name (MainMenu tab memory)
     std::string mainMenuRightItem; // restore into the global of the same name (MainMenu tab memory)
+    std::vector<std::vector<std::string>> extraPageCursors; // 4IFIR CHANGE 2026-09-13: into pkgExtraPageCursors
 };
 
 // Reads and deletes OPEN_RETURN_CONTEXT_FILEPATH (single-use, regardless of outcome).
@@ -3253,6 +3297,36 @@ static bool loadOpenReturnContext(OpenReturnContextData& out) {
         }
     }
 
+    // 4IFIR CHANGE 2026-09-13: optional tail with the cursors of pages 3..N. Missing (a file
+    // from an older engine) or malformed, it only loses that memory, never the restore.
+    std::vector<std::vector<std::string>> extraPageCursors;
+    if (ok) {
+        std::string levelCountLine;
+        if (readLine(levelCountLine)) {
+            const size_t levelCount = static_cast<size_t>(std::strtoul(levelCountLine.c_str(), nullptr, 10));
+            bool extraOk = levelCount <= 64;
+            for (size_t i = 0; extraOk && i < levelCount; ++i) {
+                std::string rowCountLine;
+                const size_t rowCount = readLine(rowCountLine)
+                    ? static_cast<size_t>(std::strtoul(rowCountLine.c_str(), nullptr, 10)) : 65;
+                if (rowCount > 64) {
+                    extraOk = false;
+                    break;
+                }
+                std::vector<std::string> row(rowCount);
+                for (auto& cursor : row) {
+                    if (!readLine(cursor)) {
+                        extraOk = false;
+                        break;
+                    }
+                }
+                extraPageCursors.push_back(std::move(row));
+            }
+            if (!extraOk)
+                extraPageCursors.clear();
+        }
+    }
+
     // Fully done with the handle before touching the directory entry — deleting a file out
     // from under a still-open FILE* silently fails on the SD card filesystem, which is exactly
     // what let this file survive indefinitely and re-trigger the restore on every subsequent
@@ -3270,6 +3344,7 @@ static bool loadOpenReturnContext(OpenReturnContextData& out) {
     out.pageCursors = std::move(pageCursors);
     out.mainMenuLeftItem  = std::move(mainMenuLeftItemRead);
     out.mainMenuRightItem = std::move(mainMenuRightItemRead);
+    out.extraPageCursors  = std::move(extraPageCursors); // 4IFIR CHANGE 2026-09-13
     return !out.leaf.packagePath.empty() && isDirectory(out.leaf.packagePath);
 }
 
@@ -4586,7 +4661,9 @@ bool drawCommandsMenu(
     std::string& pathPatternOff,
     bool& usingPages,
     const bool packageMenuMode,
-    const bool showWidget = false) {
+    const bool showWidget = false,
+    // 4IFIR CHANGE 2026-09-13: out -- number of page markers, for N-page navigation.
+    size_t* pageCountOut = nullptr) {
 
     std::map<std::string, std::map<std::string, std::string>> packageConfigData;
     
@@ -4598,6 +4675,8 @@ bool drawCommandsMenu(
     
     std::string lastSection;
     std::string drawLocation;
+    // 4IFIR CHANGE 2026-09-13: names of all page markers in file order (N pages).
+    std::vector<std::string> pageNames;
     
     std::string commandName;
     std::string commandFooter;
@@ -4757,6 +4836,30 @@ bool drawCommandsMenu(
 
         if (drawLocation.empty() || (currentPage == drawLocation) || (optionName.front() == '@')) {
             
+            // 4IFIR CHANGE 2026-09-13: a [@Name] section holding only ';' lines is a page
+            // marker when every ;visibility_condition= in it holds, and is skipped when one
+            // fails. The older engine counts only empty sections as markers; to it this is a
+            // plain section hidden by its condition.
+            int conditionalMarker = -1; // -1: not such a section, 0: hidden, 1: marker
+            if (optionName.front() == '@' && !commands.empty() &&
+                std::all_of(commands.begin(), commands.end(), [](const std::vector<std::string>& c) {
+                    return !c.empty() && !c[0].empty() && c[0][0] == ';'; })) {
+                conditionalMarker = 1;
+                for (const auto& c : commands) {
+                    if (c[0].compare(0, VISIBILITY_CONDITION_PATTERN_LEN, VISIBILITY_CONDITION_PATTERN) == 0) {
+                        std::string conditionStr = c[0].substr(VISIBILITY_CONDITION_PATTERN_LEN);
+                        for (size_t j = 1; j < c.size(); ++j)
+                            conditionStr += " " + c[j];
+                        if (!evaluateMenuCondition(conditionStr, packagePath)) {
+                            conditionalMarker = 0;
+                            break;
+                        }
+                    }
+                }
+                if (conditionalMarker == 1)
+                    commands.clear(); // from here on it is an ordinary empty marker
+            }
+
             // Custom header implementation
             if (!dropdownSection.empty()) {
                 if (i == 0) {
@@ -4782,6 +4885,8 @@ bool drawCommandsMenu(
                      isMini = settings.isMini;
                      isSlot = settings.isSlot;
                 }
+                // 4IFIR CHANGE 2026-09-13: a page marker whose condition failed draws nothing.
+                if (conditionalMarker == 0) continue;
                 if (commands.size() == 0) {
                     if (optionName == dropdownSection)
                         skipSection = false;
@@ -4797,16 +4902,16 @@ bool drawCommandsMenu(
                      isSlot = settings.isSlot;
                 }
 
+                // 4IFIR CHANGE 2026-09-13: a page marker whose condition failed draws nothing.
+                if (conditionalMarker == 0) continue;
                 if (commands.size() == 0) {
                     if (optionName.front() == '@') {
-                        if (drawLocation.empty()) {
-                            pageLeftName = optionName.substr(1);
-                            drawLocation = LEFT_STR;
-                        } else {
-                            pageRightName = optionName.substr(1);
+                        // 4IFIR CHANGE 2026-09-13: every marker opens the next page; upstream let
+                        // the second and every later marker rename the right page.
+                        pageNames.push_back(optionName.substr(1));
+                        drawLocation = pageIdForIndex(pageNames.size() - 1);
+                        if (pageNames.size() >= 2)
                             usingPages = true;
-                            drawLocation = RIGHT_STR;
-                        }
                     } else if (optionName.front() == '*') {
                         if (i == 0) {
                             // Add a section break with small text to indicate the "Commands" section
@@ -6056,6 +6161,22 @@ bool drawCommandsMenu(
     commandsOff.clear();
     tableData.clear();
 
+    // 4IFIR CHANGE 2026-09-13: pageLeftName/pageRightName now name the previous and the
+    // next page of the current one; for two pages the frame hint is the upstream one.
+    pageLeftName.clear();
+    pageRightName.clear();
+    {
+        const size_t index = pageIndexOf(currentPage);
+        if (index != std::string::npos && index < pageNames.size()) {
+            if (index > 0)
+                pageLeftName = pageNames[index - 1];
+            if (index + 1 < pageNames.size())
+                pageRightName = pageNames[index + 1];
+        }
+    }
+    if (pageCountOut)
+        *pageCountOut = pageNames.size();
+
     if (onlyTables) {
         addDummyListItem(list, 1); // assuming a header is always above
     }
@@ -6083,6 +6204,9 @@ private:
 
     std::string packageIniPath;
     std::string packageConfigIniPath;
+
+    // 4IFIR CHANGE 2026-09-13: number of page markers of this package, for N-page navigation.
+    size_t pageCount = 0;
 
 public:
     /**
@@ -6195,7 +6319,8 @@ public:
         std::string pageLeftName, pageRightName;
         bool noClickableItems = drawCommandsMenu(list, packageIniPath, packageConfigIniPath, packageHeader, this->pageHeader, pageLeftName, pageRightName,
             this->packagePath, this->currentPage, this->packageName, this->dropdownSection, this->nestedLayer,
-            this->pathPattern, this->pathPatternOn, this->pathPatternOff, this->usingPages, true, showWidget
+            this->pathPattern, this->pathPatternOn, this->pathPatternOff, this->usingPages, true, showWidget,
+            &this->pageCount // 4IFIR CHANGE 2026-09-13
         );
         
 
@@ -6232,8 +6357,10 @@ public:
            noClickableItems,
            "",
            packageHeader.color,
-           (usingPages && currentPage == RIGHT_STR) ? pageLeftName : "",
-           (usingPages && currentPage == LEFT_STR) ? pageRightName : ""
+           // 4IFIR CHANGE 2026-09-13: previous/next page. The frame shows one arrow; on a
+           // middle page it points forward.
+           (usingPages && pageRightName.empty()) ? pageLeftName : "",
+           usingPages ? pageRightName : ""
         );
 
         list->jumpToItem(jumpItemName, jumpItemValue, jumpItemExactMatch);
@@ -6319,14 +6446,19 @@ public:
         
         if (usingPages) {
             simulatedMenu.exchange(false, std::memory_order_acq_rel);
+            // 4IFIR CHANGE 2026-09-13: N pages -- the neighbours of the current page by index.
+            const size_t pageIndex = pageIndexOf(currentPage);
+            const bool hasNextPage = pageIndex != std::string::npos && pageIndex + 1 < pageCount;
+            const bool hasPrevPage = pageIndex != std::string::npos && pageIndex > 0;
             
             //bool wasSimulated = false;
             {
                 if (simulatedNextPage.exchange(false, std::memory_order_acq_rel)) {
-                    if (currentPage == LEFT_STR) {
+                    // 4IFIR CHANGE 2026-09-13: the footer arrow points forward when it can.
+                    if (hasNextPage) {
                         keysDown |= KEY_DRIGHT;
                     }
-                    else if (currentPage == RIGHT_STR) {
+                    else if (hasPrevPage) {
                         keysDown |= KEY_DLEFT;
                     }
                     //wasSimulated = true;
@@ -6346,49 +6478,25 @@ public:
                 unlockedSlide.store(false, release);
             };
     
-            if (currentPage == LEFT_STR || currentPage == RIGHT_STR) {
-                const bool onLeftPage = (currentPage == LEFT_STR);
-                const u64 navKey = onLeftPage ? KEY_RIGHT : KEY_LEFT;
-                const std::string& destPage = onLeftPage ? RIGHT_STR : LEFT_STR;
-                if (!isTouching && slideCondition && (keysDown & navKey) &&
+            // 4IFIR CHANGE 2026-09-13: page navigation by index over N pages; every page
+            // keeps its own cursor per nesting level (pageCursorSlot).
+            if (hasNextPage || hasPrevPage) {
+                const bool goNext = hasNextPage && (keysDown & KEY_RIGHT);
+                const u64 navKey = goNext ? KEY_RIGHT : KEY_LEFT;
+                if ((goNext || hasPrevPage) && !isTouching && slideCondition && (keysDown & navKey) &&
                     (!onTrack ? !(keysHeld & ~navKey & ALL_KEYS_MASK) : !(keysHeld & ~KEY_R & ~navKey & ALL_KEYS_MASK))) {
-                    {
-                        //bool expected = false;
-                        //if (tsl::elm::s_swapPending.compare_exchange_strong(
-                        //        expected, true, std::memory_order_acq_rel)) {
-                        //    tsl::swapTo<PackageMenu>(packagePath, dropdownSection, destPage, packageName, nestedLayer, pageHeader);
-                        //    resetSlideState();
-                        //    //if (!wasSimulated)
-                        //    //    triggerNavigationFeedback();
-                        //    //else {
-                        //    //    triggerRumbleClick.store(true, release);
-                        //    //    signalHaptics();
-                        //    //}
-                        //    triggerNavigationFeedback();
-                        //}
-                        // Ensure pkgPageCursors has an entry for this nesting level
-                        //if (usePageRecall) {
-                        {
-                            while (pkgPageCursors.size() <= static_cast<size_t>(nestedLayer))
-                                pkgPageCursors.emplace_back("", "");
-                            // Save cursor for the page we're leaving; restore cursor for the page we're entering
-                            if (onLeftPage) {
-                                pkgPageCursors[nestedLayer].first  = s_lastFocusedItemText;
-                                jumpItemName = pkgPageCursors[nestedLayer].second;
-                            } else {
-                                pkgPageCursors[nestedLayer].second = s_lastFocusedItemText;
-                                jumpItemName = pkgPageCursors[nestedLayer].first;
-                            }
-                            jumpItemValue = "";
-                            jumpItemExactMatch.store(false, release);
-                            skipJumpReset.store(true, release);
-                        }
-                        tsl::swapTo<PackageMenu>(packagePath, dropdownSection, destPage, packageName, nestedLayer, pageHeader);
-                        resetSlideState();
-                        triggerNavigationFeedback();
+                    const size_t destIndex = goNext ? pageIndex + 1 : std::min(pageIndex, pageCount) - 1;
+                    // Save cursor for the page we're leaving; restore cursor for the page we're entering
+                    pageCursorSlot(nestedLayer, pageIndex) = s_lastFocusedItemText;
+                    jumpItemName = pageCursorSlot(nestedLayer, destIndex);
+                    jumpItemValue = "";
+                    jumpItemExactMatch.store(false, release);
+                    skipJumpReset.store(true, release);
+                    tsl::swapTo<PackageMenu>(packagePath, dropdownSection, pageIdForIndex(destIndex), packageName, nestedLayer, pageHeader);
+                    resetSlideState();
+                    triggerNavigationFeedback();
 
-                        return true;
-                    }
+                    return true;
                 }
             }
         }
@@ -6412,6 +6520,7 @@ public:
                 inPackageMenu = false;
                 //if (usePageRecall) pkgPageCursors.clear();
                 pkgPageCursors.clear(); // returning to main menu: discard all package page cursors
+                pkgExtraPageCursors.clear(); // 4IFIR CHANGE 2026-09-13: pages 3..N as well
                 if (!inHiddenMode.load(std::memory_order_acquire))
                     returningToMain = true;
                 else
@@ -6434,6 +6543,9 @@ public:
                 //if (usePageRecall && (pkgPageCursors.size() > static_cast<size_t>(nestedMenuCount + 1)))
                 if (pkgPageCursors.size() > static_cast<size_t>(nestedMenuCount + 1))
                     pkgPageCursors.resize(nestedMenuCount + 1);
+                // 4IFIR CHANGE 2026-09-13: pages 3..N as well
+                if (pkgExtraPageCursors.size() > static_cast<size_t>(nestedMenuCount + 1))
+                    pkgExtraPageCursors.resize(nestedMenuCount + 1);
                 if (lastPackageMenu == "subPackageMenu") {
                     returningToSubPackage = true;
                 } else {
@@ -6473,6 +6585,9 @@ public:
                 //if (usePageRecall && pkgPageCursors.size() > static_cast<size_t>(nestedMenuCount + 1))
                 if (pkgPageCursors.size() > static_cast<size_t>(nestedMenuCount + 1))
                     pkgPageCursors.resize(nestedMenuCount + 1);
+                // 4IFIR CHANGE 2026-09-13: pages 3..N as well
+                if (pkgExtraPageCursors.size() > static_cast<size_t>(nestedMenuCount + 1))
+                    pkgExtraPageCursors.resize(nestedMenuCount + 1);
                 
                 jumpItemName = returnTo.option;
                 jumpItemValue = "";
@@ -7958,6 +8073,7 @@ public:
                 // to the other page after landing — now or after backing out further —
                 // recalls the same item it would have had this process never exited.
                 pkgPageCursors = std::move(restoreData.pageCursors);
+                pkgExtraPageCursors = std::move(restoreData.extraPageCursors); // 4IFIR CHANGE 2026-09-13: pages 3..N
 
                 const ReturnContext& leaf = restoreData.leaf;
 

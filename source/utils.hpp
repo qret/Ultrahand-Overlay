@@ -66,6 +66,10 @@
  *              buildTableDrawerLines executes no commands and only reads them.
  *              Outside a table build the behaviour is unchanged.
  *
+ *  2026-09-13  Condition mode "engine_feature pages" is true on this engine, which
+ *              draws any number of package pages (main.cpp). An engine without the
+ *              mode reads the condition as false, so a package hides such a page there.
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -6108,6 +6112,14 @@ inline bool evaluateMenuCondition(std::string condition, const std::string& pack
         std::string currentVal = parseValueFromIniSection(path, section, key);
         removeQuotes(currentVal);
         return negate ^ (currentVal == expected);
+    }
+    // 4IFIR CHANGE 2026-09-13: "engine_feature <name>" asks whether this engine has a
+    // feature; "pages" (N package pages) is the only one. An engine without the mode
+    // reads the condition as false, which is how a package hides a page from it.
+    if (mode == "engine_feature") {
+        const std::string feature = nextToken();
+        if (feature.empty()) return false;
+        return negate ^ (feature == "pages");
     }
     return negate ^ false;
 }
