@@ -86,7 +86,7 @@ static size_t pageIndexOf(const std::string& page) {
     return std::string::npos;
 }
 
-// Cursor memory of one page at one nesting level; grows the storage on demand.
+// 4IFIR CHANGE 2026-09-13: cursor memory of one page at one nesting level; grows on demand.
 static std::string& pageCursorSlot(size_t layer, size_t index) {
     while (pkgPageCursors.size() <= layer) pkgPageCursors.emplace_back("", "");
     if (index == 0) return pkgPageCursors[layer].first;
@@ -4860,18 +4860,19 @@ bool drawCommandsMenu(
 
         if (drawLocation.empty() || (currentPage == drawLocation) || (optionName.front() == '@')) {
             
-            // 4IFIR CHANGE 2026-09-13: a [@Name] section holding only ';' lines is a page
-            // marker when every ;visibility_condition= in it holds, and is skipped when one
-            // fails. The older engine counts only empty sections as markers; to it this is a
-            // plain section hidden by its condition.
+            // 4IFIR CHANGE 2026-09-13: a [@Name] section holding only ';' lines and at least
+            // one ;visibility_condition= is a page marker when every condition holds, and is
+            // skipped when one fails. Without a condition it stays a plain section, as upstream.
             int conditionalMarker = -1; // -1: not such a section, 0: hidden, 1: marker
             bool markerToggle = false;  // 4IFIR CHANGE 2026-09-13: ;page_toggle in the marker
             if (optionName.front() == '@' && !commands.empty() &&
                 std::all_of(commands.begin(), commands.end(), [](const std::vector<std::string>& c) {
                     return !c.empty() && !c[0].empty() && c[0][0] == ';'; })) {
                 conditionalMarker = 1;
+                bool sawCondition = false;
                 for (const auto& c : commands) {
                     if (c[0].compare(0, VISIBILITY_CONDITION_PATTERN_LEN, VISIBILITY_CONDITION_PATTERN) == 0) {
+                        sawCondition = true;
                         std::string conditionStr = c[0].substr(VISIBILITY_CONDITION_PATTERN_LEN);
                         for (size_t j = 1; j < c.size(); ++j)
                             conditionStr += " " + c[j];
@@ -4883,7 +4884,10 @@ bool drawCommandsMenu(
                         markerToggle = true;
                     }
                 }
-                if (conditionalMarker == 1)
+                if (!sawCondition) {
+                    conditionalMarker = -1;
+                    markerToggle = false;
+                } else if (conditionalMarker == 1)
                     commands.clear(); // from here on it is an ordinary empty marker
             }
 
@@ -6845,6 +6849,8 @@ public:
      */
     virtual tsl::elm::Element* createUI() override {
         //std::lock_guard<std::mutex> lock(transitionMutex);
+        // 4IFIR CHANGE 2026-09-13: page flags belong to the package page that set them.
+        ult4ifir::g_pageFlags.store(0, std::memory_order_release);
     
         // Handle hidden mode flags
         {
