@@ -171,6 +171,7 @@ constexpr std::string_view WRAPPING_INDENT_PATTERN = ";wrapping_indent="; // tru
 constexpr std::string_view START_GAP_PATTERN =";start_gap=";
 constexpr std::string_view END_GAP_PATTERN =";end_gap=";
 constexpr std::string_view END_GAP_PATTERN_ALIAS =";gap=";
+constexpr std::string_view SKIP_NULL_PATTERN = ";skip_null="; // 4IFIR CHANGE 2026-09-13
 constexpr std::string_view OFFSET_PATTERN = ";offset=";
 constexpr std::string_view SPACING_PATTERN = ";spacing=";
 constexpr std::string_view INFO_TEXT_COLOR_PATTERN = ";info_text_color=";
@@ -4726,6 +4727,7 @@ bool drawCommandsMenu(
     std::string tableWrappingMode;
     std::string tableBgColor;
     bool tableDrawBorder;
+    bool tableSkipNull; // 4IFIR CHANGE 2026-09-13: ;skip_null=true
 
     bool useWrappingIndent;
 
@@ -4800,6 +4802,7 @@ bool drawCommandsMenu(
         useWrappingIndent = false;
         tableBgColor = DEFAULT_STR;
         tableDrawBorder = true;
+        tableSkipNull = false;
 
         // Trackbar settings
         minValue = 0;
@@ -5191,6 +5194,8 @@ bool drawCommandsMenu(
                                     steps = ult::stoi(commandName.substr(STEPS_PATTERN_LEN));
                                     continue;
                                 }
+                                // 4IFIR CHANGE 2026-09-13: ;skip_null=true -- table rows holding "null" are dropped.
+                                if (parseBoolFlag(commandName, SKIP_NULL_PATTERN, tableSkipNull)) continue;
                                 break;
                             case 'd':
                                 if (commandName.compare(0, DEVICE_STATE_PATTERN_LEN, DEVICE_STATE_PATTERN) == 0) {
@@ -5540,18 +5545,23 @@ bool drawCommandsMenu(
                         lastPackageHeader = getFirstSectionText(tableData, packagePath);
                     }
 
-                    if (usingTopPivot) {
-                        if (list->getLastIndex() == 0)
-                            onlyTables = false;
+                    // 4IFIR CHANGE 2026-09-13: the top pivot is added from drawTable's beforeAdd hook,
+                    // right before the table itself, so a table emptied by ;skip_null=true leaves no
+                    // pivot behind. Building the table does not touch the list, so every other table
+                    // ends up exactly as before.
+                    const bool tableAdded = addTable(list, tableData, packagePath, tableColumnOffset, tableStartGap, tableEndGap, tableSpacing,
+                        tableSectionTextColor, tableInfoTextColor, tableInfoTextColor, tableAlignment, hideTableBackground, useHeaderIndent, isPolling, isScrollableTable, tableWrappingMode, useWrappingIndent, tableBgColor, tableDrawBorder,
+                        tableSkipNull, [&]() {
+                            if (usingTopPivot) {
+                                if (list->getLastIndex() == 0)
+                                    onlyTables = false;
 
-                        addDummyListItem(list);
-                    }
-
-                    addTable(list, tableData, packagePath, tableColumnOffset, tableStartGap, tableEndGap, tableSpacing,
-                        tableSectionTextColor, tableInfoTextColor, tableInfoTextColor, tableAlignment, hideTableBackground, useHeaderIndent, isPolling, isScrollableTable, tableWrappingMode, useWrappingIndent, tableBgColor, tableDrawBorder);
+                                addDummyListItem(list);
+                            }
+                        });
                     tableData.clear();
 
-                    if (usingBottomPivot) {
+                    if (tableAdded && usingBottomPivot) {
                         addDummyListItem(list);
                     }
 

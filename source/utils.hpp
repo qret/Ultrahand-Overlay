@@ -77,6 +77,10 @@
  *              same remembered stat as {json_file(...)}. New {ini_file_sorted(N)}:
  *              the N-th section name in natural order (digit runs compare as numbers).
  *
+ *  2026-09-13  Table directive ;skip_null=true: a row whose label or value still holds
+ *              "null" after substitution is dropped, and a table left with no rows is
+ *              not added at all -- no frame, no gaps, no pivot items.
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -1541,7 +1545,8 @@ static bool buildTableDrawerLines(
     std::vector<std::string>&                    outSection,
     std::vector<std::string>&                    outInfo,
     std::vector<s32>&                            outY,
-    std::vector<int>&                            outX
+    std::vector<int>&                            outX,
+    bool                                         skipNull = false // 4IFIR CHANGE 2026-09-13: ;skip_null=true
 ) {
     // 4IFIR CHANGE — see the parsed-JSON scope cache above. The guard covers the whole
     // build: this function reads files and appends strings, it never runs a command,
@@ -1703,6 +1708,15 @@ static bool buildTableDrawerLines(
                 }
                 else {
                     if (!cmd[0].empty() && cmd[0][0] == ';') continue;
+                    // 4IFIR CHANGE 2026-09-13: ;skip_null=true drops a row whose label or value
+                    // still holds "null" after substitution.
+                    if (skipNull) {
+                        const bool shifted = cmd[0].empty() && cmd.size() > 2;
+                        const std::string& label = shifted ? cmd[1] : cmd[0];
+                        const bool valueNull = shifted ? (cmd[2].find(NULL_STR) != std::string::npos)
+                                                       : (cmd.size() > 1 && cmd[1].find(NULL_STR) != std::string::npos);
+                        if (valueNull || label.find(NULL_STR) != std::string::npos) continue;
+                    }
                     if (cmd[0].empty() && cmd.size() > 2) {
                         // {json(...)} prefix resolved to "" — shift: cmd[1]→col1, cmd[2]→col2
                         baseSection.push_back(getTranslated(cmd[1]));
@@ -1777,7 +1791,7 @@ static tsl::Color getRawColor(const std::string& c, tsl::Color defaultColor) {
 }
 
 
-void drawTable(
+bool drawTable(
     tsl::elm::List*      list,
     const std::vector<std::vector<std::string>>& tableData,
     std::vector<std::string>&             sectionLines,
@@ -1798,7 +1812,11 @@ void drawTable(
     bool useWrappedTextIndent        = false,
     const std::string& packagePath          = "",
     const std::string& bgColor              = DEFAULT_STR,
-    bool drawBorder                  = true
+    bool drawBorder                  = true,
+    // 4IFIR CHANGE 2026-09-13: ;skip_null=true, and a hook run right before the table is
+    // added (a pivot item then goes in only with the table). Returns false if not added.
+    bool skipNull                    = false,
+    const std::function<void()>& beforeAdd = nullptr
 ) {
     // Prebuild initial buffers
     std::vector<std::string> cacheExpSec, cacheExpInfo;
@@ -1809,8 +1827,12 @@ void drawTable(
         tableData, sectionLines, infoLines, packagePath,
         columnOffset, startGap, newlineGap,
         wrappingMode, alignment, useWrappedTextIndent,
-        cacheExpSec, cacheExpInfo, cacheYOff, cacheXOff
+        cacheExpSec, cacheExpInfo, cacheYOff, cacheXOff, skipNull
     ) && isPolling;
+
+    // 4IFIR CHANGE 2026-09-13: ;skip_null=true dropped every row -- add nothing at all,
+    // neither the frame nor its gaps.
+    if (skipNull && cacheExpSec.empty()) return false;
 
     // Resolve colors once outside the render loop
     const auto secRaw = getRawColor(tableSectionTextColor, tsl::sectionTextColor);
@@ -1838,6 +1860,7 @@ void drawTable(
         + endGap
     );
 
+    if (beforeAdd) beforeAdd(); // 4IFIR CHANGE 2026-09-13
     list->addItem(new tsl::elm::TableDrawer(
         [=,
          cacheExpSec  = std::move(cacheExpSec),
@@ -1854,7 +1877,7 @@ void drawTable(
                         tableData, sectionLines, infoLines, packagePath,
                         columnOffset, startGap, newlineGap,
                         wrappingMode, alignment, useWrappedTextIndent,
-                        cacheExpSec, cacheExpInfo, cacheYOff, cacheXOff
+                        cacheExpSec, cacheExpInfo, cacheYOff, cacheXOff, skipNull
                     );
                     lastUpdateNS = currentNS;
                 }
@@ -1952,11 +1975,12 @@ void drawTable(
         hasCustomBgColor,
         customBgRaw
     ), itemHeight);
+    return true; // 4IFIR CHANGE 2026-09-13
 }
 
 
 // ─── addTable simply forwards through ───────────────────────────────────────────
-void addTable(
+bool addTable(
     tsl::elm::List*       list,
     const std::vector<std::vector<std::string>>& tableData,
     const std::string&                     packagePath,
@@ -1975,17 +1999,19 @@ void addTable(
     const std::string&                     wrappingMode                = "none",
     const bool&                            useWrappedTextIndent        = false,
     const std::string&                     tableBgColor                = DEFAULT_STR,
-    const bool&                            tableDrawBorder             = true
+    const bool&                            tableDrawBorder             = true,
+    const bool&                            skipNull                    = false,   // 4IFIR CHANGE 2026-09-13
+    const std::function<void()>&           beforeAdd                   = nullptr  // 4IFIR CHANGE 2026-09-13
 ) {
     std::vector<std::string> sectionLines, infoLines;
-    drawTable(
+    return drawTable(
         list, tableData,
         sectionLines, infoLines,
         columnOffset, tableStartGap, tableEndGap, tableSpacing,
         tableSectionTextColor, tableInfoTextColor, tableInfoTextHighlightColor,
         tableAlignment, hideTableBackground, useHeaderIndent,
         isPolling, isScrollable, wrappingMode, useWrappedTextIndent,
-        packagePath, tableBgColor, tableDrawBorder
+        packagePath, tableBgColor, tableDrawBorder, skipNull, beforeAdd
     );
 }
 
