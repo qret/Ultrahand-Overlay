@@ -70,6 +70,13 @@
  *              draws any number of package pages (main.cpp). An engine without the
  *              mode reads the condition as false, so a package hides such a page there.
  *
+ *  2026-09-13  {ini_file(...)} is read once per table build, like {json_file(...)}.
+ *              The file is loaded once and both library parsers -- the section list
+ *              and the section/key value -- are replayed over the cached bytes, each
+ *              with its own trimming rules. The existence check goes through the
+ *              same remembered stat as {json_file(...)}. New {ini_file_sorted(N)}:
+ *              the N-th section name in natural order (digit runs compare as numbers).
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -1159,10 +1166,21 @@ bool applyPlaceholderReplacements(std::vector<std::string>& cmd, const std::stri
  *  The guard nests: an inner scope restores the outer one on exit.
  */
 namespace ult4ifir {
+    // 4IFIR CHANGE 2026-09-13: one {ini_file} source, read once per table build; see iniValue().
+    struct IniDoc {
+        std::string path;
+        std::string bytes;
+        bool sectionsReady = false;
+        bool valuesReady = false;
+        std::vector<std::string> sections;                    // parseSectionsFromIniPattern() rules
+        std::unordered_map<std::string, std::string> values;  // "section\0key" -> first value
+    };
+
     struct JsonScope {
         std::vector<std::pair<std::string, std::unique_ptr<json_t, JsonDeleter>>> docs;
         std::vector<std::string> statOk;   // paths already confirmed to exist
         bool generalsDone = false;         // updateGeneralPlaceholders() already ran here
+        std::vector<std::unique_ptr<IniDoc>> inis; // 4IFIR CHANGE 2026-09-13: {ini_file} sources
     };
 
     inline thread_local JsonScope* g_jsonScope = nullptr;
@@ -1255,6 +1273,148 @@ namespace ult4ifir {
         if (!ult::isFileOrDirectory(path)) return false;
         g_jsonScope->statOk.push_back(path);
         return true;
+    }
+
+    /*  4IFIR CHANGE 2026-09-13 -- {ini_file(...)} read once per table build.
+     *
+     *  Same scope and the same safety argument as the JSON cache above. The file is
+     *  loaded once and the two library parsers are replayed over the cached bytes,
+     *  separately on purpose: parseSectionsFromIni() trims every whitespace character,
+     *  parseValueFromIniSection() only spaces and tabs, so a line like "[A]\f" is a
+     *  section to the first and not to the second. Both read with fgets(buf, 1024),
+     *  and that chunking is replayed too. No open scope, or a wildcard path: library.
+     */
+    template <typename Fn>
+    inline void iniForEachFgetsLine(const std::string& bytes, Fn&& fn) {
+        const size_t n = bytes.size();
+        size_t pos = 0;
+        while (pos < n) {
+            size_t end = pos;
+            while (end < n && end - pos < 1023) {
+                if (bytes[end++] == '\n') break;
+            }
+            size_t len = 0;                        // strlen() of the chunk
+            while (pos + len < end && bytes[pos + len] != '\0') ++len;
+            fn(bytes.data() + pos, len);
+            pos = end;
+        }
+    }
+
+    inline IniDoc* iniScopeDoc(const std::string& path) {
+        if (!g_jsonScope || path.find('*') != std::string::npos) return nullptr;
+        for (auto& d : g_jsonScope->inis)
+            if (d->path == path) return d.get();
+        auto doc = std::make_unique<IniDoc>();
+        doc->path = path;
+        if (FILE* file = fopen(path.c_str(), "r")) {  // a failed open reads as an empty file, as in the library
+            char buffer[4096];
+            size_t got;
+            while ((got = fread(buffer, 1, sizeof(buffer), file)) > 0)
+                doc->bytes.append(buffer, got);
+            fclose(file);
+        }
+        g_jsonScope->inis.push_back(std::move(doc));
+        return g_jsonScope->inis.back().get();
+    }
+
+    // parseSectionsFromIniPattern(path) for a single file: names in file order, empty and
+    // repeated names dropped.
+    inline std::vector<std::string> iniSectionNames(const std::string& path) {
+        IniDoc* d = iniScopeDoc(path);
+        if (!d) return parseSectionsFromIniPattern(path);
+        if (!d->sectionsReady) {
+            d->sectionsReady = true;
+            std::string line;
+            iniForEachFgetsLine(d->bytes, [&](const char* p, size_t len) {
+                if (len > 0 && p[len - 1] == '\n') {
+                    --len;
+                    if (len > 0 && p[len - 1] == '\r') --len;
+                }
+                line.assign(p, len);
+                trim(line);
+                if (!line.empty() && line.front() == '[' && line.back() == ']') {
+                    std::string name = line.substr(1, line.size() - 2);
+                    if (!name.empty() && std::find(d->sections.begin(), d->sections.end(), name) == d->sections.end())
+                        d->sections.push_back(std::move(name));
+                }
+            });
+        }
+        return d->sections;
+    }
+
+    // parseValueFromIniSection(path, section, key): the first matching key in file order.
+    inline std::string iniValue(const std::string& path, const std::string& section, const std::string& key) {
+        IniDoc* d = iniScopeDoc(path);
+        if (!d) return parseValueFromIniSection(path, section, key);
+        if (!d->valuesReady) {
+            d->valuesReady = true;
+            bool inSection = false;
+            std::string current;
+            iniForEachFgetsLine(d->bytes, [&](const char* p, size_t len) {
+                if (len > 0 && p[len - 1] == '\n') {
+                    if (--len > 0 && p[len - 1] == '\r') --len;
+                }
+                if (len == 0) return;
+                const char* s = p;
+                const char* e = p + len;
+                while (s < e && (*s == ' ' || *s == '\t')) ++s;
+                while (e > s && (e[-1] == ' ' || e[-1] == '\t')) --e;
+                if (s >= e) return;
+                if (*s == '[' && e[-1] == ']') {
+                    if (e - s > 2) {                // "[]" changes nothing, as in the library
+                        current.assign(s + 1, e - 1);
+                        inSection = true;
+                    }
+                    return;
+                }
+                if (!inSection) return;
+                const char* eq = s;
+                while (eq < e && *eq != '=') ++eq;
+                if (eq >= e) return;
+                const char* keyEnd = eq;
+                while (keyEnd > s && (keyEnd[-1] == ' ' || keyEnd[-1] == '\t')) --keyEnd;
+                if (keyEnd <= s) return;
+                const char* valueStart = eq + 1;
+                while (valueStart < e && (*valueStart == ' ' || *valueStart == '\t')) ++valueStart;
+                std::string composite = current;
+                composite.push_back('\0');
+                composite.append(s, keyEnd);
+                d->values.emplace(std::move(composite), std::string(valueStart, e)); // first one wins
+            });
+        }
+        std::string composite = section;
+        composite.push_back('\0');
+        composite += key;
+        const auto it = d->values.find(composite);
+        return (it == d->values.end()) ? std::string() : it->second;
+    }
+
+    // 4IFIR CHANGE 2026-09-13: natural order for {ini_file_sorted(N)} -- digit runs compare
+    // as numbers, so 1600CL12 < 2265CL12 < 2707CL12 < 2707CL14.
+    inline bool naturalLess(const std::string& a, const std::string& b) {
+        size_t i = 0, j = 0;
+        while (i < a.size() && j < b.size()) {
+            const bool digitA = std::isdigit(static_cast<unsigned char>(a[i]));
+            const bool digitB = std::isdigit(static_cast<unsigned char>(b[j]));
+            if (digitA && digitB) {
+                size_t endA = i, endB = j;
+                while (endA < a.size() && std::isdigit(static_cast<unsigned char>(a[endA]))) ++endA;
+                while (endB < b.size() && std::isdigit(static_cast<unsigned char>(b[endB]))) ++endB;
+                size_t startA = i, startB = j;              // skip leading zeros
+                while (startA + 1 < endA && a[startA] == '0') ++startA;
+                while (startB + 1 < endB && b[startB] == '0') ++startB;
+                if (endA - startA != endB - startB) return (endA - startA) < (endB - startB);
+                const int c = a.compare(startA, endA - startA, b, startB, endB - startB);
+                if (c != 0) return c < 0;
+                i = endA;
+                j = endB;
+            } else {
+                if (a[i] != b[j]) return static_cast<unsigned char>(a[i]) < static_cast<unsigned char>(b[j]);
+                ++i;
+                ++j;
+            }
+        }
+        return (a.size() - i) < (b.size() - j);
     }
 }
 
@@ -2380,7 +2540,8 @@ void applyReplaceIniPlaceholder(std::string& arg, const std::string& commandName
             trim(iniKey);
             removeQuotes(iniKey);
             
-            replacement = returnOrNull(parseValueFromIniSection(iniPath, iniSection, iniKey));
+            // 4IFIR CHANGE 2026-09-13: cached within a table build, see ult4ifir::iniValue().
+            replacement = returnOrNull(ult4ifir::iniValue(iniPath, iniSection, iniKey));
         } else {
             // Check if the content is an integer (section index lookup)
             if (std::all_of(placeholderContent.begin(), placeholderContent.end(), ::isdigit)) {
@@ -2391,7 +2552,8 @@ void applyReplaceIniPlaceholder(std::string& arg, const std::string& commandName
                     
                     // Load section names only once when needed
                     if (!sectionsLoaded) {
-                        sectionNames = parseSectionsFromIniPattern(iniPath);
+                        // 4IFIR CHANGE 2026-09-13: cached within a table build.
+                        sectionNames = ult4ifir::iniSectionNames(iniPath);
                         sectionsLoaded = true;
                     }
                     
@@ -3560,10 +3722,25 @@ bool applyPlaceholderReplacements(std::vector<std::string>& cmd, const std::stri
             return returnOrNull(result);
         }},
         {"{ini_file(", [&](const std::string& placeholder) { 
-            if (iniPath.empty() || !isFileOrDirectory(iniPath)) return NULL_STR;
+            // 4IFIR CHANGE 2026-09-13: stat is remembered for the duration of one table build.
+            if (iniPath.empty() || !ult4ifir::scopePathOk(iniPath)) return NULL_STR;
             std::string result = placeholder;
             applyReplaceIniPlaceholder(result, INI_FILE_STR, iniPath); 
             return result;
+        }},
+        // 4IFIR CHANGE 2026-09-13: N-th section name of the ini_file in natural order (see
+        // ult4ifir::naturalLess), empty and repeated names dropped; null past the end.
+        {"{ini_file_sorted(", [&](const std::string& placeholder) {
+            std::string indexStr;
+            if (!getPlaceholderContent(placeholder, indexStr)) return NULL_STR;
+            trim(indexStr);
+            if (indexStr.empty() || !std::all_of(indexStr.begin(), indexStr.end(), ::isdigit) || !isValidNumber(indexStr))
+                return NULL_STR;
+            if (iniPath.empty() || !ult4ifir::scopePathOk(iniPath)) return NULL_STR;
+            std::vector<std::string> names = ult4ifir::iniSectionNames(iniPath);
+            std::stable_sort(names.begin(), names.end(), ult4ifir::naturalLess);
+            const size_t idx = static_cast<size_t>(ult::stoi(indexStr));
+            return (idx < names.size()) ? names[idx] : NULL_STR;
         }},
         {"{list(", [&](const std::string& placeholder) {
             std::string indexStr;
