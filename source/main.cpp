@@ -61,6 +61,9 @@ static std::vector<std::pair<std::string,std::string>> pkgPageCursors;
 // 4IFIR CHANGE 2026-09-13: cursors of pages 3..N, [nesting level][page index - 2]. Pages
 // 1 and 2 stay in pkgPageCursors, so the "open" return file keeps its original layout.
 static std::vector<std::vector<std::string>> pkgExtraPageCursors;
+// 4IFIR CHANGE 2026-09-13: the PackageMenu built with non-zero A/Y page flags, if any;
+// Overlay::onShow() rebuilds it in the default view.
+static tsl::Gui* pageFlagsOwner = nullptr;
 
 // 4IFIR CHANGE 2026-09-13: package page ids for N pages -- "left", "right", then
 // "page3", "page4", ... The first two keep the upstream ids.
@@ -4643,6 +4646,13 @@ static bool handleTriggerReturnToPackages(const std::string& packagePath) {
 }
 
 
+// 4IFIR CHANGE 2026-09-13: focus holder of a ;page_toggle page. A plain DummyListItem is
+// locked, so A on it plays the "wall" sound; this one leaves A to PackageMenu::handleInput.
+class PageKeyDummy : public tsl::elm::DummyListItem {
+public:
+    virtual bool onClick(u64 /*keys*/) override { return false; }
+};
+
 // returns if there are or are not cickable items.
 bool drawCommandsMenu(
     tsl::elm::List* list,
@@ -4664,7 +4674,9 @@ bool drawCommandsMenu(
     const bool packageMenuMode,
     const bool showWidget = false,
     // 4IFIR CHANGE 2026-09-13: out -- number of page markers, for N-page navigation.
-    size_t* pageCountOut = nullptr) {
+    size_t* pageCountOut = nullptr,
+    // 4IFIR CHANGE 2026-09-13: out -- the current page's marker carries ;page_toggle.
+    bool* pageToggleOut = nullptr) {
 
     std::map<std::string, std::map<std::string, std::string>> packageConfigData;
     
@@ -4678,6 +4690,15 @@ bool drawCommandsMenu(
     std::string drawLocation;
     // 4IFIR CHANGE 2026-09-13: names of all page markers in file order (N pages).
     std::vector<std::string> pageNames;
+    // 4IFIR CHANGE 2026-09-13: the current page's marker carries ;page_toggle -- A and Y then
+    // reach PackageMenu::handleInput, so the focus holder must not swallow A.
+    bool pageToggle = false;
+    const auto addFocusDummy = [&](s32 index) {
+        if (pageToggle)
+            list->addItem(new PageKeyDummy(), 0, index);
+        else
+            addDummyListItem(list, index);
+    };
     
     std::string commandName;
     std::string commandFooter;
@@ -4844,6 +4865,7 @@ bool drawCommandsMenu(
             // fails. The older engine counts only empty sections as markers; to it this is a
             // plain section hidden by its condition.
             int conditionalMarker = -1; // -1: not such a section, 0: hidden, 1: marker
+            bool markerToggle = false;  // 4IFIR CHANGE 2026-09-13: ;page_toggle in the marker
             if (optionName.front() == '@' && !commands.empty() &&
                 std::all_of(commands.begin(), commands.end(), [](const std::vector<std::string>& c) {
                     return !c.empty() && !c[0].empty() && c[0][0] == ';'; })) {
@@ -4857,6 +4879,8 @@ bool drawCommandsMenu(
                             conditionalMarker = 0;
                             break;
                         }
+                    } else if (c[0] == ";page_toggle" || c[0] == ";page_toggle=true") {
+                        markerToggle = true;
                     }
                 }
                 if (conditionalMarker == 1)
@@ -4915,6 +4939,8 @@ bool drawCommandsMenu(
                         drawLocation = pageIdForIndex(pageNames.size() - 1);
                         if (pageNames.size() >= 2)
                             usingPages = true;
+                        if (markerToggle && drawLocation == currentPage)
+                            pageToggle = true;
                     } else if (optionName.front() == '*') {
                         if (i == 0) {
                             // Add a section break with small text to indicate the "Commands" section
@@ -5556,13 +5582,13 @@ bool drawCommandsMenu(
                                 if (list->getLastIndex() == 0)
                                     onlyTables = false;
 
-                                addDummyListItem(list);
+                                addFocusDummy(-1); // 4IFIR CHANGE 2026-09-13
                             }
                         });
                     tableData.clear();
 
                     if (tableAdded && usingBottomPivot) {
-                        addDummyListItem(list);
+                        addFocusDummy(-1); // 4IFIR CHANGE 2026-09-13
                     }
 
                     continue;
@@ -6186,9 +6212,11 @@ bool drawCommandsMenu(
     }
     if (pageCountOut)
         *pageCountOut = pageNames.size();
+    if (pageToggleOut)
+        *pageToggleOut = pageToggle;
 
     if (onlyTables) {
-        addDummyListItem(list, 1); // assuming a header is always above
+        addFocusDummy(1); // assuming a header is always above (4IFIR CHANGE 2026-09-13: see addFocusDummy)
     }
 
     return onlyTables;
@@ -6217,6 +6245,13 @@ private:
 
     // 4IFIR CHANGE 2026-09-13: number of page markers of this package, for N-page navigation.
     size_t pageCount = 0;
+    // 4IFIR CHANGE 2026-09-13: A/Y page toggles. pageFlags: bit0 MC (A), bit1 view (Y); only
+    // the toggle handler passes non-zero, every other construction starts from 0.
+    bool pageToggle = false;
+    u8 pageFlags = 0;
+    // keysHeld seen by the previous handleInput call. ~0 at construction: A still held from
+    // the press that rebuilt the page must not count as a new press (endless toggling).
+    u64 m_prevHeld = ~0ULL;
 
 public:
     /**
@@ -6227,8 +6262,10 @@ public:
      * @param path The path to the sub-menu.
      */
     PackageMenu(const std::string& path, const std::string& sectionName = "", const std::string& page = LEFT_STR,
-        const std::string& _packageName = PACKAGE_FILENAME, const size_t _nestedlayer = 0, const std::string& _pageHeader = "") :
-        packagePath(path), dropdownSection(sectionName), currentPage(page), packageName(_packageName), nestedLayer(_nestedlayer), pageHeader(_pageHeader) {
+        const std::string& _packageName = PACKAGE_FILENAME, const size_t _nestedlayer = 0, const std::string& _pageHeader = "",
+        const u8 _pageFlags = 0) : // 4IFIR CHANGE 2026-09-13: A/Y page flags
+        packagePath(path), dropdownSection(sectionName), currentPage(page), packageName(_packageName), nestedLayer(_nestedlayer), pageHeader(_pageHeader),
+        pageFlags(_pageFlags) {
             //std::lock_guard<std::mutex> lock(transitionMutex);
 
             if (!skipJumpReset.load(acquire)) {
@@ -6247,6 +6284,7 @@ public:
      * Cleans up any resources associated with the `PackageMenu` instance.
      */
     ~PackageMenu() {
+        if (pageFlagsOwner == this) pageFlagsOwner = nullptr; // 4IFIR CHANGE 2026-09-13
         //std::lock_guard<std::mutex> lock(transitionMutex);
 
         if (returningToMain || returningToHiddenMain || pendingExitPackage.load(std::memory_order_acquire)) {
@@ -6299,6 +6337,12 @@ public:
     virtual tsl::elm::Element* createUI() override {
         //std::lock_guard<std::mutex> lock(transitionMutex);
 
+        // 4IFIR CHANGE 2026-09-13: publish this page's A/Y flags for {page_mc}, {page_view} and
+        // page_flag before anything is built. Not reset afterwards: a ;polling table rebuilds
+        // later and must still see them.
+        ult4ifir::g_pageFlags.store(pageFlags, std::memory_order_release);
+        pageFlagsOwner = pageFlags ? this : nullptr;
+
         if (dropdownSection.empty()){
             inPackageMenu = true;
             lastMenu = "packageMenu";
@@ -6330,7 +6374,7 @@ public:
         bool noClickableItems = drawCommandsMenu(list, packageIniPath, packageConfigIniPath, packageHeader, this->pageHeader, pageLeftName, pageRightName,
             this->packagePath, this->currentPage, this->packageName, this->dropdownSection, this->nestedLayer,
             this->pathPattern, this->pathPatternOn, this->pathPatternOff, this->usingPages, true, showWidget,
-            &this->pageCount // 4IFIR CHANGE 2026-09-13
+            &this->pageCount, &this->pageToggle // 4IFIR CHANGE 2026-09-13
         );
         
 
@@ -6395,6 +6439,10 @@ public:
      */
     virtual bool handleInput(uint64_t keysDown, uint64_t keysHeld, touchPosition touchInput, JoystickPosition leftJoyStick, JoystickPosition rightJoyStick) override {
         
+        // 4IFIR CHANGE 2026-09-13: A as an edge of keysHeld, for the page toggle below.
+        const bool aEdge = (keysHeld & KEY_A) && !(m_prevHeld & KEY_A);
+        m_prevHeld = keysHeld;
+
         if (handleCommandHold(keysDown, keysHeld, packagePath)) return true;
         
 
@@ -6454,6 +6502,20 @@ public:
             }
         }
         
+        // 4IFIR CHANGE 2026-09-13: on a ;page_toggle page A flips MC and Y flips the view; the
+        // same page is rebuilt from the top with that bit toggled. A also counts as a keysHeld
+        // edge, because after a long table scroll the frame strips it from keysDown.
+        if (pageToggle && !isTouching) {
+            const bool aPress = ((keysDown & KEY_A) || aEdge) && !(keysHeld & ~KEY_A & ALL_KEYS_MASK);
+            const bool yPress = (keysDown & KEY_Y) && !(keysHeld & ~KEY_Y & ALL_KEYS_MASK);
+            if (aPress || yPress) {
+                const u8 newFlags = static_cast<u8>(pageFlags ^ (aPress ? ult4ifir::PAGE_FLAG_MC : ult4ifir::PAGE_FLAG_VIEW));
+                triggerEnterFeedback();
+                tsl::swapTo<PackageMenu>(packagePath, dropdownSection, currentPage, packageName, nestedLayer, pageHeader, newFlags);
+                return true;
+            }
+        }
+
         if (usingPages) {
             simulatedMenu.exchange(false, std::memory_order_acq_rel);
             // 4IFIR CHANGE 2026-09-13: N pages -- the neighbours of the current page by index.
@@ -8004,7 +8066,12 @@ public:
      * This function is called when the overlay transitions from an invisible state to a visible state.
      * It can be used to perform actions or updates specific to the overlay's visibility.
      */
-    virtual void onShow() override {} 
+    // 4IFIR CHANGE 2026-09-13: closing the overlay counts as leaving the page -- a page shown
+    // with non-zero A/Y flags is rebuilt in its default view (via PackageMenu's refreshPage).
+    virtual void onShow() override {
+        if (pageFlagsOwner && getCurrentGui().get() == pageFlagsOwner)
+            refreshPage.store(true, std::memory_order_release);
+    }
     
     /**
      * @brief Performs actions when the overlay becomes visible.

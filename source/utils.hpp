@@ -81,6 +81,10 @@
  *              "null" after substitution is dropped, and a table left with no rows is
  *              not added at all -- no frame, no gaps, no pivot items.
  *
+ *  2026-09-13  Page toggles (main.cpp): condition mode "page_flag mc|view" and the
+ *              general placeholders {page_mc} / {page_view} report the A/Y flags of
+ *              the package page being built.
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -1267,6 +1271,13 @@ namespace ult4ifir {
         g_jsonScope->generalsDone = true;
         return true;
     }
+
+    // 4IFIR CHANGE 2026-09-13: A/Y toggles of the package page being built (bit0 MC, bit1
+    // view), for {page_mc}/{page_view} and "page_flag". Written by PackageMenu::createUI()
+    // and never reset, so a ;polling table rebuilt later still sees them.
+    inline constexpr u8 PAGE_FLAG_MC = 1;
+    inline constexpr u8 PAGE_FLAG_VIEW = 2;
+    inline std::atomic<u8> g_pageFlags{0};
 
     // stat() is not cached anywhere in the engine, and the placeholder lambdas call
     // it before every single substitution purely to decide between NULL_STR and a
@@ -3496,7 +3507,10 @@ void updateGeneralPlaceholders() {
         {"{build_id}", getBuildIdAsString()},
         {"{local_ip}", getLocalIpAddress()},
         {"{volume}", getMasterVolumeLevel()},
-        {"{backlight}", getBacklightLevel()}
+        {"{backlight}", getBacklightLevel()},
+        // 4IFIR CHANGE 2026-09-13: A/Y toggles of the package page being built, "0" or "1".
+        {"{page_mc}", (ult4ifir::g_pageFlags.load(std::memory_order_acquire) & ult4ifir::PAGE_FLAG_MC) ? "1" : "0"},
+        {"{page_view}", (ult4ifir::g_pageFlags.load(std::memory_order_acquire) & ult4ifir::PAGE_FLAG_VIEW) ? "1" : "0"}
     };
 }
 
@@ -6323,6 +6337,16 @@ inline bool evaluateMenuCondition(std::string condition, const std::string& pack
         const std::string feature = nextToken();
         if (feature.empty()) return false;
         return negate ^ (feature == "pages");
+    }
+    // 4IFIR CHANGE 2026-09-13: "page_flag mc|view" -- the A/Y toggles of the page being built.
+    if (mode == "page_flag") {
+        const std::string flag = nextToken();
+        if (flag.empty()) return false;
+        const u8 flags = ult4ifir::g_pageFlags.load(std::memory_order_acquire);
+        const bool set = (flag == "mc")   ? (flags & ult4ifir::PAGE_FLAG_MC) != 0
+                       : (flag == "view") ? (flags & ult4ifir::PAGE_FLAG_VIEW) != 0
+                       : false;
+        return negate ^ set;
     }
     return negate ^ false;
 }
