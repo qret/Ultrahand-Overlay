@@ -85,6 +85,10 @@
  *              general placeholders {page_mc} / {page_view} report the A/Y flags of
  *              the package page being built.
  *
+ *  2026-09-13  Paged Y view: Y counts views 0..N instead of flipping a bit, and
+ *              ;page_view_source=<ini>,<perPage> in the marker sets N from the ini's
+ *              section count; {page_view_first|from|to|pages|total} describe the page.
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -1276,8 +1280,22 @@ namespace ult4ifir {
     // view), for {page_mc}/{page_view} and "page_flag". Written by PackageMenu::createUI()
     // and never reset, so a ;polling table rebuilt later still sees them.
     inline constexpr u8 PAGE_FLAG_MC = 1;
-    inline constexpr u8 PAGE_FLAG_VIEW = 2;
     inline std::atomic<u8> g_pageFlags{0};
+    // 4IFIR CHANGE 2026-09-13: bits 1..7 count the Y view, 0 = default. A marker with
+    // ;page_view_source=<ini>,<perPage> pages that view over the ini's sections; these
+    // hold its page size and section count, 0 = no such directive on the page.
+    inline constexpr u8 PAGE_VIEW_SHIFT = 1;
+    inline constexpr u32 PAGE_VIEW_MAX = 127;
+    inline std::atomic<u32> g_pageViewPerPage{0};
+    inline std::atomic<u32> g_pageViewTotal{0};
+    inline u32 pageView(u8 flags) { return static_cast<u32>(flags >> PAGE_VIEW_SHIFT); }
+    // Pages of a paged view: at least 1 (an empty file still gets one empty page), 0 without
+    // a source, capped so the view number fits the 7 flag bits.
+    inline u32 pageViewPages(u32 perPage, u32 total) {
+        if (perPage == 0) return 0;
+        const u32 pages = (total == 0) ? 1 : (total - 1) / perPage + 1;
+        return (pages > PAGE_VIEW_MAX) ? PAGE_VIEW_MAX : pages;
+    }
 
     // stat() is not cached anywhere in the engine, and the placeholder lambdas call
     // it before every single substitution purely to decide between NULL_STR and a
@@ -3477,6 +3495,35 @@ bool replacePlaceholdersRecursively(
 
 
 std::unordered_map<std::string, std::string> generalPlaceholders;
+
+// 4IFIR CHANGE 2026-09-13: {page_view} is the Y view number (0 = default). For a
+// ;page_view_source= view: {page_view_first} is the 0-based index of the first entry on
+// this view page, {page_view_from}/{page_view_to} the 1-based range shown (0 and 0 when
+// nothing is), {page_view_pages} the page count, {page_view_total} the entry count.
+// Written straight into the map, so a page scope that already built it sees the change.
+void publishPageViewPlaceholders() {
+    const u32 view = ult4ifir::pageView(ult4ifir::g_pageFlags.load(std::memory_order_acquire));
+    const u32 perPage = ult4ifir::g_pageViewPerPage.load(std::memory_order_acquire);
+    const u32 total = ult4ifir::g_pageViewTotal.load(std::memory_order_acquire);
+    const u32 first = (view > 0 && perPage > 0) ? (view - 1) * perPage : 0;
+    const u32 from = (view > 0 && perPage > 0 && first < total) ? first + 1 : 0;
+    const u32 to = from ? std::min(first + perPage, total) : 0;
+    generalPlaceholders["{page_view}"] = ult::to_string(static_cast<int>(view));
+    generalPlaceholders["{page_view_first}"] = ult::to_string(static_cast<int>(first));
+    generalPlaceholders["{page_view_from}"] = ult::to_string(static_cast<int>(from));
+    generalPlaceholders["{page_view_to}"] = ult::to_string(static_cast<int>(to));
+    generalPlaceholders["{page_view_pages}"] = ult::to_string(static_cast<int>(ult4ifir::pageViewPages(perPage, total)));
+    generalPlaceholders["{page_view_total}"] = ult::to_string(static_cast<int>(total));
+}
+
+// 4IFIR CHANGE 2026-09-13: every page build starts from these flags and no paged view.
+void publishPageFlags(u8 flags) {
+    ult4ifir::g_pageFlags.store(flags, std::memory_order_release);
+    ult4ifir::g_pageViewPerPage.store(0, std::memory_order_release);
+    ult4ifir::g_pageViewTotal.store(0, std::memory_order_release);
+    publishPageViewPlaceholders();
+}
+
 void updateGeneralPlaceholders() {
     // {ovl_language}: the currently selected overlay language code
     // ("en", "es", "ja", "zh-cn", ...).  Read fresh from config.ini on every
@@ -3508,10 +3555,10 @@ void updateGeneralPlaceholders() {
         {"{local_ip}", getLocalIpAddress()},
         {"{volume}", getMasterVolumeLevel()},
         {"{backlight}", getBacklightLevel()},
-        // 4IFIR CHANGE 2026-09-13: A/Y toggles of the package page being built, "0" or "1".
-        {"{page_mc}", (ult4ifir::g_pageFlags.load(std::memory_order_acquire) & ult4ifir::PAGE_FLAG_MC) ? "1" : "0"},
-        {"{page_view}", (ult4ifir::g_pageFlags.load(std::memory_order_acquire) & ult4ifir::PAGE_FLAG_VIEW) ? "1" : "0"}
+        // 4IFIR CHANGE 2026-09-13: A toggle of the package page being built, "0" or "1".
+        {"{page_mc}", (ult4ifir::g_pageFlags.load(std::memory_order_acquire) & ult4ifir::PAGE_FLAG_MC) ? "1" : "0"}
     };
+    publishPageViewPlaceholders(); // 4IFIR CHANGE 2026-09-13: {page_view} and its paging
 }
 
 // Extracts the argument string from inside a "name(...)" placeholder token.
@@ -6344,7 +6391,7 @@ inline bool evaluateMenuCondition(std::string condition, const std::string& pack
         if (flag.empty()) return false;
         const u8 flags = ult4ifir::g_pageFlags.load(std::memory_order_acquire);
         const bool set = (flag == "mc")   ? (flags & ult4ifir::PAGE_FLAG_MC) != 0
-                       : (flag == "view") ? (flags & ult4ifir::PAGE_FLAG_VIEW) != 0
+                       : (flag == "view") ? ult4ifir::pageView(flags) != 0 // any view but the default
                        : false;
         return negate ^ set;
     }

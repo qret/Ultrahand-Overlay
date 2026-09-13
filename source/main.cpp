@@ -4653,6 +4653,36 @@ public:
     virtual bool onClick(u64 /*keys*/) override { return false; }
 };
 
+// 4IFIR CHANGE 2026-09-13: ";page_view_source=<ini>,<perPage>" of the current page's
+// marker. Counts the ini's sections the way {ini_file_sorted(N)} sees them (same parser,
+// empty and repeated names dropped, missing file = 0), publishes the paging and returns
+// the page count; 0 when the value is malformed, which leaves Y flipping 0 <-> 1.
+static size_t applyPageViewSource(std::string source, const std::string& packagePath) {
+    const size_t comma = source.rfind(',');
+    if (comma == std::string::npos) return 0;
+    std::string perPageStr = source.substr(comma + 1);
+    source.resize(comma);
+    trim(perPageStr);
+    trim(source);
+    removeQuotes(source);
+    if (source.empty() || perPageStr.empty() || perPageStr.size() > 4 ||
+        !std::all_of(perPageStr.begin(), perPageStr.end(), ::isdigit))
+        return 0;
+    const u32 perPage = static_cast<u32>(std::strtoul(perPageStr.c_str(), nullptr, 10));
+    if (perPage == 0) return 0;
+    preprocessPath(source, packagePath);
+    u32 total = 0;
+    {
+        ult4ifir::JsonScopeGuard scope; // the cached parser {ini_file_sorted} uses in a table
+        if (ult4ifir::scopePathOk(source))
+            total = static_cast<u32>(ult4ifir::iniSectionNames(source).size());
+    }
+    ult4ifir::g_pageViewPerPage.store(perPage, std::memory_order_release);
+    ult4ifir::g_pageViewTotal.store(total, std::memory_order_release);
+    publishPageViewPlaceholders();
+    return ult4ifir::pageViewPages(perPage, total);
+}
+
 // returns if there are or are not cickable items.
 bool drawCommandsMenu(
     tsl::elm::List* list,
@@ -4676,7 +4706,9 @@ bool drawCommandsMenu(
     // 4IFIR CHANGE 2026-09-13: out -- number of page markers, for N-page navigation.
     size_t* pageCountOut = nullptr,
     // 4IFIR CHANGE 2026-09-13: out -- the current page's marker carries ;page_toggle.
-    bool* pageToggleOut = nullptr) {
+    bool* pageToggleOut = nullptr,
+    // 4IFIR CHANGE 2026-09-13: out -- pages of its ;page_view_source= view, 0 = none.
+    size_t* pageViewPagesOut = nullptr) {
 
     std::map<std::string, std::map<std::string, std::string>> packageConfigData;
     
@@ -4693,6 +4725,7 @@ bool drawCommandsMenu(
     // 4IFIR CHANGE 2026-09-13: the current page's marker carries ;page_toggle -- A and Y then
     // reach PackageMenu::handleInput, so the focus holder must not swallow A.
     bool pageToggle = false;
+    size_t pageViewPages = 0; // 4IFIR CHANGE 2026-09-13: see applyPageViewSource
     const auto addFocusDummy = [&](s32 index) {
         if (pageToggle)
             list->addItem(new PageKeyDummy(), 0, index);
@@ -4865,6 +4898,7 @@ bool drawCommandsMenu(
             // skipped when one fails. Without a condition it stays a plain section, as upstream.
             int conditionalMarker = -1; // -1: not such a section, 0: hidden, 1: marker
             bool markerToggle = false;  // 4IFIR CHANGE 2026-09-13: ;page_toggle in the marker
+            std::string markerViewSource; // 4IFIR CHANGE 2026-09-13: ;page_view_source= value, raw
             if (optionName.front() == '@' && !commands.empty() &&
                 std::all_of(commands.begin(), commands.end(), [](const std::vector<std::string>& c) {
                     return !c.empty() && !c[0].empty() && c[0][0] == ';'; })) {
@@ -4882,6 +4916,10 @@ bool drawCommandsMenu(
                         }
                     } else if (c[0] == ";page_toggle" || c[0] == ";page_toggle=true") {
                         markerToggle = true;
+                    } else if (c[0].compare(0, 18, ";page_view_source=") == 0) {
+                        markerViewSource = c[0].substr(18); // 4IFIR CHANGE 2026-09-13
+                        for (size_t j = 1; j < c.size(); ++j)
+                            markerViewSource += " " + c[j];
                     }
                 }
                 if (!sawCondition) {
@@ -4943,8 +4981,12 @@ bool drawCommandsMenu(
                         drawLocation = pageIdForIndex(pageNames.size() - 1);
                         if (pageNames.size() >= 2)
                             usingPages = true;
-                        if (markerToggle && drawLocation == currentPage)
+                        if (markerToggle && drawLocation == currentPage) {
                             pageToggle = true;
+                            // 4IFIR CHANGE 2026-09-13: before any table of the page is built.
+                            if (!markerViewSource.empty())
+                                pageViewPages = applyPageViewSource(markerViewSource, packagePath);
+                        }
                     } else if (optionName.front() == '*') {
                         if (i == 0) {
                             // Add a section break with small text to indicate the "Commands" section
@@ -6218,6 +6260,8 @@ bool drawCommandsMenu(
         *pageCountOut = pageNames.size();
     if (pageToggleOut)
         *pageToggleOut = pageToggle;
+    if (pageViewPagesOut)
+        *pageViewPagesOut = pageViewPages; // 4IFIR CHANGE 2026-09-13
 
     if (onlyTables) {
         addFocusDummy(1); // assuming a header is always above (4IFIR CHANGE 2026-09-13: see addFocusDummy)
@@ -6249,10 +6293,11 @@ private:
 
     // 4IFIR CHANGE 2026-09-13: number of page markers of this package, for N-page navigation.
     size_t pageCount = 0;
-    // 4IFIR CHANGE 2026-09-13: A/Y page toggles. pageFlags: bit0 MC (A), bit1 view (Y); only
-    // the toggle handler passes non-zero, every other construction starts from 0.
+    // 4IFIR CHANGE 2026-09-13: A/Y page toggles. pageFlags: bit0 MC (A), bits 1..7 view number
+    // (Y); only the toggle handler passes non-zero, every other construction starts from 0.
     bool pageToggle = false;
     u8 pageFlags = 0;
+    size_t pageViewPages = 0; // pages of a ;page_view_source= view, 0 = none (Y flips 0 <-> 1)
     // keysHeld seen by the previous handleInput call. ~0 at construction: A still held from
     // the press that rebuilt the page must not count as a new press (endless toggling).
     u64 m_prevHeld = ~0ULL;
@@ -6344,7 +6389,7 @@ public:
         // 4IFIR CHANGE 2026-09-13: publish this page's A/Y flags for {page_mc}, {page_view} and
         // page_flag before anything is built. Not reset afterwards: a ;polling table rebuilds
         // later and must still see them.
-        ult4ifir::g_pageFlags.store(pageFlags, std::memory_order_release);
+        publishPageFlags(pageFlags);
         pageFlagsOwner = pageFlags ? this : nullptr;
 
         if (dropdownSection.empty()){
@@ -6378,7 +6423,7 @@ public:
         bool noClickableItems = drawCommandsMenu(list, packageIniPath, packageConfigIniPath, packageHeader, this->pageHeader, pageLeftName, pageRightName,
             this->packagePath, this->currentPage, this->packageName, this->dropdownSection, this->nestedLayer,
             this->pathPattern, this->pathPatternOn, this->pathPatternOff, this->usingPages, true, showWidget,
-            &this->pageCount, &this->pageToggle // 4IFIR CHANGE 2026-09-13
+            &this->pageCount, &this->pageToggle, &this->pageViewPages // 4IFIR CHANGE 2026-09-13
         );
         
 
@@ -6506,14 +6551,19 @@ public:
             }
         }
         
-        // 4IFIR CHANGE 2026-09-13: on a ;page_toggle page A flips MC and Y flips the view; the
-        // same page is rebuilt from the top with that bit toggled. A also counts as a keysHeld
-        // edge, because after a long table scroll the frame strips it from keysDown.
+        // 4IFIR CHANGE 2026-09-13: on a ;page_toggle page A flips MC and Y steps the view
+        // 0 -> 1 -> ... -> pages -> 0 (0 <-> 1 without ;page_view_source=); the same page is
+        // rebuilt from the top. A also counts as a keysHeld edge, because after a long table
+        // scroll the frame strips it from keysDown.
         if (pageToggle && !isTouching) {
             const bool aPress = ((keysDown & KEY_A) || aEdge) && !(keysHeld & ~KEY_A & ALL_KEYS_MASK);
             const bool yPress = (keysDown & KEY_Y) && !(keysHeld & ~KEY_Y & ALL_KEYS_MASK);
             if (aPress || yPress) {
-                const u8 newFlags = static_cast<u8>(pageFlags ^ (aPress ? ult4ifir::PAGE_FLAG_MC : ult4ifir::PAGE_FLAG_VIEW));
+                const u32 views = static_cast<u32>(pageViewPages ? pageViewPages : 1) + 1;
+                const u32 nextView = (ult4ifir::pageView(pageFlags) + 1) % views;
+                const u8 newFlags = aPress
+                    ? static_cast<u8>(pageFlags ^ ult4ifir::PAGE_FLAG_MC)
+                    : static_cast<u8>((pageFlags & ult4ifir::PAGE_FLAG_MC) | (nextView << ult4ifir::PAGE_VIEW_SHIFT));
                 triggerEnterFeedback();
                 tsl::swapTo<PackageMenu>(packagePath, dropdownSection, currentPage, packageName, nestedLayer, pageHeader, newFlags);
                 return true;
@@ -6850,7 +6900,7 @@ public:
     virtual tsl::elm::Element* createUI() override {
         //std::lock_guard<std::mutex> lock(transitionMutex);
         // 4IFIR CHANGE 2026-09-13: page flags belong to the package page that set them.
-        ult4ifir::g_pageFlags.store(0, std::memory_order_release);
+        publishPageFlags(0);
     
         // Handle hidden mode flags
         {
