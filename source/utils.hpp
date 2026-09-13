@@ -1276,8 +1276,8 @@ namespace ult4ifir {
         return true;
     }
 
-    // 4IFIR CHANGE 2026-09-13: A/Y toggles of the package page being built (bit0 MC, bit1
-    // view), for {page_mc}/{page_view} and "page_flag". Written by PackageMenu::createUI()
+    // 4IFIR CHANGE 2026-09-13: A/Y toggles of the package page being built (bit0 MC, bits
+    // 1..7 view), for {page_mc}/{page_view} and "page_flag". Written by PackageMenu::createUI()
     // and never reset, so a ;polling table rebuilt later still sees them.
     inline constexpr u8 PAGE_FLAG_MC = 1;
     inline std::atomic<u8> g_pageFlags{0};
