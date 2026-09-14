@@ -1690,7 +1690,7 @@ public:
             addHeader(list, NOTIFICATION_SETTINGS);
             silenceNotifications = getBoolValue("silence_notifications", false); // FALSE_STR default
             createToggleListItem(list, SILENCE_NOTIFICATIONS, silenceNotifications, "silence_notifications");
-            useStartupNotification = getBoolValue("startup_notification", true); // TRUE_STR default
+            useStartupNotification = getBoolValue("startup_notification", false); // 4IFIR CHANGE 2026-09-14: FALSE_STR default
             createToggleListItem(list, STARTUP_NOTIFICATION, useStartupNotification, "startup_notification");
             useNotifications = getBoolValue("notifications", true); // TRUE_STR default
             createToggleListItem(list, API_NOTIFICATIONS, useNotifications, "notifications");
@@ -8081,7 +8081,9 @@ void initializeSettingsAndDirectories() {
     //setDefaultValue("page_recall",            TRUE_STR,  usePageRecall);
     //setDefaultValue("launch_recall",          TRUE_STR,  useLaunchRecall);
     setDefaultValue("right_alignment",        FALSE_STR, useRightAlignment);  // also set by parseOverlaySettings
-    setDefaultValue("startup_notification",   TRUE_STR,  useStartupNotification);
+    // 4IFIR CHANGE 2026-09-14: no "has started" popup on a clean install; it showed on
+    // every boot. Existing configs keep their value; the library default is patched too.
+    setDefaultValue("startup_notification",   FALSE_STR, useStartupNotification);
 
     // State keys — read current value, provision default if missing
     ensureDefault(IN_OVERLAY_STR, FALSE_STR);

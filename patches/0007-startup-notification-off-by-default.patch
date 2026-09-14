@@ -1,0 +1,30 @@
+diff --git a/libtesla/source/tesla.cpp b/libtesla/source/tesla.cpp
+index 12d3b80..62057e4 100644
+--- a/libtesla/source/tesla.cpp
++++ b/libtesla/source/tesla.cpp
+@@ -54,6 +54,12 @@
+  *              make the library default agree with the seeded one. Every other
+  *              boolean setting was checked mechanically; this was the only mismatch.
+  *
++ *  2026-09-14  The "Ultrahand has started." popup is off by default: the static
++ *              useStartupNotification in libultra/source/tsl_utils.cpp is now false,
++ *              matching the overlay, which seeds "startup_notification" as false.
++ *              It showed on every boot. The key and its toggle under Settings ->
++ *              Notifications work as before; existing configs keep their value.
++ *
+  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
+  */
+ 
+diff --git a/libultra/source/tsl_utils.cpp b/libultra/source/tsl_utils.cpp
+index 41a86dc..bd8dcae 100644
+--- a/libultra/source/tsl_utils.cpp
++++ b/libultra/source/tsl_utils.cpp
+@@ -218,7 +218,7 @@ namespace ult {
+     //bool usePageRecall = true;
+     bool useNotifications = true;
+     bool useNotificationsHotkey = true;
+-    bool useStartupNotification = true;
++    bool useStartupNotification = false; // 4IFIR CHANGE: startup popup off by default (was true)
+     bool silenceNotifications = false;
+     bool useSoundEffects = false;   // 4IFIR CHANGE: sound off by default (was true)
+     bool useHapticFeedback = false;
