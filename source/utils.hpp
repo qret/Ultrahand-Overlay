@@ -1211,7 +1211,7 @@ namespace ult4ifir {
      *  WHY. The table scope above already collapsed the per-command rebuild of the
      *  general placeholders to one per table. A page still pays for it once per table
      *  SECTION -- 21 on one screen of our package -- plus once per ;header_indent=
-     *  table through getFirstSectionText(), which runs outside any scope at all. Each
+     *  table through getFirstSectionText(). Each
      *  rebuild opens and closes nifm, ldr:dmnt, audctl and lbl: about 21 IPC a time.
      *
      *  WHY THIS IS SAFE, and it is the same reason one step wider: drawCommandsMenu()
@@ -1453,6 +1453,9 @@ namespace ult4ifir {
 
 
 std::string getFirstSectionText(const std::vector<std::vector<std::string>>& tableData, const std::string& packagePath) {
+    // 4IFIR CHANGE 2026-09-14: the table-build cache of buildTableDrawerLines(). The header
+    // text resolves {ini_file}/{json_file} too, and nothing here runs a command or writes.
+    ult4ifir::JsonScopeGuard jsonScopeGuard;
     std::string message;
     std::string listFileSourcePath;
     std::string hexPath, iniPath, listString, listPath, jsonString, jsonPath;
