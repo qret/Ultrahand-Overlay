@@ -89,6 +89,11 @@
  *              ;page_view_source=<ini>,<perPage> in the marker sets N from the ini's
  *              section count; {page_view_first|from|to|pages|total} describe the page.
  *
+ *  2026-09-14  getFirstSectionText() opens the same table-build document cache, so a
+ *              ;header_indent= table reads each ini/JSON file once while its header text
+ *              is built instead of once per placeholder. It runs no commands, so nothing
+ *              on disk can change inside it; the cache is gone before addTable().
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -1211,8 +1216,8 @@ namespace ult4ifir {
      *  WHY. The table scope above already collapsed the per-command rebuild of the
      *  general placeholders to one per table. A page still pays for it once per table
      *  SECTION -- 21 on one screen of our package -- plus once per ;header_indent=
-     *  table through getFirstSectionText(). Each
-     *  rebuild opens and closes nifm, ldr:dmnt, audctl and lbl: about 21 IPC a time.
+     *  table through getFirstSectionText(). Each rebuild opens and closes nifm,
+     *  ldr:dmnt, audctl and lbl: about 21 IPC a time.
      *
      *  WHY THIS IS SAFE, and it is the same reason one step wider: drawCommandsMenu()
      *  runs no package command. It reads files and builds list items; the only thing
