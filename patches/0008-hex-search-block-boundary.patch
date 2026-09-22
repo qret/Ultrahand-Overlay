@@ -1,0 +1,47 @@
+diff --git a/libultra/source/hex_funcs.cpp b/libultra/source/hex_funcs.cpp
+index 53b0220..18a0140 100644
+--- a/libultra/source/hex_funcs.cpp
++++ b/libultra/source/hex_funcs.cpp
+@@ -259,18 +259,26 @@ namespace ult {
+         const unsigned char firstByte = patternPtr[0];
+         
+         // Use heap allocation for the buffer to avoid stack overflow with large buffer sizes
+-        std::unique_ptr<unsigned char[]> buffer(new unsigned char[HEX_BUFFER_SIZE]);
++        // 4IFIR CHANGE 2026-09-22: the last patternLen-1 bytes of each block are carried
++        // into the next one, and only starts where the whole pattern is in the buffer are
++        // searched. Back-to-back blocks missed a pattern split across a block boundary
++        // and let memcmp read past the end of the buffer.
++        const size_t keep = patternLen ? patternLen - 1 : 0;
++        const size_t bufSize = std::max(HEX_BUFFER_SIZE, patternLen * 2);
++        std::unique_ptr<unsigned char[]> buffer(new unsigned char[bufSize]);
+         size_t bytesRead = 0;
+-        size_t offset = 0;
++        size_t offset = 0;  // file offset of buffer[0]
++        size_t carried = 0;
+         size_t i = 0;
+         
+ 
+-        while ((bytesRead = fread(buffer.get(), 1, HEX_BUFFER_SIZE, file)) > 0) {
++        while ((bytesRead = fread(buffer.get() + carried, 1, bufSize - carried, file)) > 0) {
+             const unsigned char* bufPtr = buffer.get();
++            const size_t avail = carried + bytesRead;
+             
+             // Optimized search with first-byte filtering and loop unrolling
+             i = 0;
+-            const size_t searchEnd = bytesRead;
++            const size_t searchEnd = avail > keep ? avail - keep : 0;  // 4IFIR CHANGE
+             
+             // Process 4 bytes at a time for better cache usage
+             for (; i + 4 <= searchEnd; i += 4) {
+@@ -311,7 +319,10 @@ namespace ult {
+                 }
+             }
+             
+-            offset += bytesRead;
++            // 4IFIR CHANGE: carry the unsearched tail over to the next block
++            carried = std::min(keep, avail);
++            memmove(buffer.get(), buffer.get() + avail - carried, carried);
++            offset += avail - carried;
+         }
+     
+         fclose(file);
