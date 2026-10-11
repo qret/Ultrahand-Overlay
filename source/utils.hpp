@@ -100,6 +100,14 @@
  *              instead of the item that opened the list (main.cpp, SelectionOverlay).
  *              Without arguments it behaves as before; an older engine ignores them.
  *
+ *  2026-10-11  Root package /switch/.packages/package.ini (main.cpp, createPackagesMenu):
+ *              the "Reboot To" submenu now holds 4mosphere, Stock (semi-stock) and Hekate,
+ *              each on hold A; the root screen is unchanged. The file carries a
+ *              ";4ifir_root_menu=N" line above its first section; the engine rewrites a
+ *              file with a lower N, or an unmarked file equal byte for byte to the former
+ *              built-in text, and leaves every other file alone. Upstream wrote the file
+ *              only when it was missing.
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 

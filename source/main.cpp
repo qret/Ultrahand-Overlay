@@ -6857,6 +6857,57 @@ bool inOverlay = false;
 bool isComboReturnFrom = false;    // set when --comboReturnFrom was passed; gated on useLaunchRecall in loadInitialGui
 bool isComboReturnPackage = false; // set when --comboReturnPackage was passed; gated on useLaunchRecall in loadInitialGui
 
+// 4IFIR CHANGE 2026-10-11: versioned root package (/switch/.packages/package.ini).
+// ROOT-MENU-BEGIN: std only, a PC test compiles this block on its own.
+namespace ult4ifir {
+    // Raise ROOT_MENU_VERSION whenever ROOT_MENU_BODY changes: a file carrying a lower
+    // marker is rewritten, so the new menu reaches cards that already have the file.
+    constexpr int ROOT_MENU_VERSION = 1;
+    constexpr std::string_view ROOT_MENU_MARKER = ";4ifir_root_menu=";
+    // The former text with only the body of the "Reboot To" submenu replaced; the root
+    // screen (Commands / Reboot To > / Shutdown) is unchanged.
+    constexpr std::string_view ROOT_MENU_BODY =
+        "[*Reboot To]\n"
+        "[4mosphere - \uE093\uE0E0]\n;hold=true\nreboot boot '4mosphere'\n"
+        "[Stock (semi-stock) - \uE093\uE0E0]\n;hold=true\nreboot boot 'Stock (semi-stock)'\n"
+        "[Hekate - \uE093\uE0E0]\n;hold=true\nreboot HEKATE\n"
+        "\n"
+        "[Commands]\n"
+        "[Shutdown - \uE093\uE0E0]\n;hold=true\nshutdown\n";
+    // The former built-in text, byte for byte. An unmarked file equal to it was
+    // written by the engine, not edited by a person, so it is replaced too.
+    constexpr std::string_view ROOT_MENU_LEGACY = "[*Reboot To]\n[*Boot Entry]\nini_file_source /bootloader/hekate_ipl.ini\nfilter config\nreboot boot '{ini_file_source(*)}'\n[*INI Entry]\nini_file_source /bootloader/ini/*.ini\nfilter config\nreboot ini '{ini_file_source(*)}'\n[hekate - \uE073]\nreboot HEKATE\n[hekate UMS - \uE073\uE08D]\nreboot UMS\n\n[Commands]\n[Shutdown - ]\n;hold=true\nshutdown\n";
+
+    // content: the first bytes of the file; truncated: the file is longer than that.
+    // Missing file, lower marker, or unmarked legacy text -> rewrite. Any other file
+    // (edited, current or newer marker, malformed marker) is left alone.
+    inline bool rootMenuNeedsRewrite(bool exists, std::string_view content, bool truncated) {
+        if (!exists) return true;
+        size_t pos = 0;
+        while (pos < content.size()) {
+            size_t end = content.find('\n', pos);
+            if (end == std::string_view::npos) end = content.size();
+            std::string_view line(content.data() + pos, end - pos);  // no substr: no throw path
+            if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+            if (!line.empty() && line.front() == '[') break;  // the marker lives above the first section
+            if (line.starts_with(ROOT_MENU_MARKER)) {
+                std::string_view num(line.data() + ROOT_MENU_MARKER.size(), line.size() - ROOT_MENU_MARKER.size());
+                while (!num.empty() && (num.back() == ' ' || num.back() == '\t')) num.remove_suffix(1);
+                if (num.empty()) return false;
+                for (char c : num) if (c < '0' || c > '9') return false;
+                while (num.size() > 1 && num.front() == '0') num.remove_prefix(1);
+                if (num.size() > 6) return false;
+                int version = 0;
+                for (char c : num) version = version * 10 + (c - '0');
+                return version < ROOT_MENU_VERSION;
+            }
+            pos = end + 1;
+        }
+        return !truncated && content == ROOT_MENU_LEGACY;
+    }
+}
+// ROOT-MENU-END
+
 /**
  * @brief The `MainMenu` class handles the main menu overlay functionality.
  *
@@ -7349,14 +7400,34 @@ public:
     }
     
     bool createPackagesMenu(tsl::elm::List* list) {
-        if (!isFile(PACKAGE_PATH + PACKAGE_FILENAME)) {
-            deleteFileOrDirectory(PACKAGE_PATH + CONFIG_FILENAME);
+        // 4IFIR CHANGE 2026-10-11: also rewrite an engine-written root package when the
+        // menu version rises (ult4ifir::rootMenuNeedsRewrite); upstream wrote it only
+        // when missing. One small read per build of this screen.
+        {
+            const std::string rootIniPath = PACKAGE_PATH + PACKAGE_FILENAME;
+            const bool exists = isFile(rootIniPath);
+            std::string head;
+            bool truncated = false;
+            if (exists) {
+                if (FILE* in = fopen(rootIniPath.c_str(), "rb")) {
+                    head.resize(8192);
+                    head.resize(fread(head.data(), 1, head.size(), in));
+                    truncated = (fgetc(in) != EOF);
+                    fclose(in);
+                }
+            }
+            if (ult4ifir::rootMenuNeedsRewrite(exists, head, truncated)) {
+                deleteFileOrDirectory(PACKAGE_PATH + CONFIG_FILENAME);
 
-            FILE* packageFileOut = fopen((PACKAGE_PATH + PACKAGE_FILENAME).c_str(), "w");
-            if (packageFileOut) {
-                constexpr const char packageContent[] = "[*Reboot To]\n[*Boot Entry]\nini_file_source /bootloader/hekate_ipl.ini\nfilter config\nreboot boot '{ini_file_source(*)}'\n[*INI Entry]\nini_file_source /bootloader/ini/*.ini\nfilter config\nreboot ini '{ini_file_source(*)}'\n[hekate - \uE073]\nreboot HEKATE\n[hekate UMS - \uE073\uE08D]\nreboot UMS\n\n[Commands]\n[Shutdown - ]\n;hold=true\nshutdown\n";
-                fwrite(packageContent, sizeof(packageContent) - 1, 1, packageFileOut);
-                fclose(packageFileOut);
+                FILE* packageFileOut = fopen(rootIniPath.c_str(), "w");
+                if (packageFileOut) {
+                    std::string markerLine(ult4ifir::ROOT_MENU_MARKER);
+                    markerLine += std::to_string(ult4ifir::ROOT_MENU_VERSION);
+                    markerLine += '\n';
+                    fwrite(markerLine.data(), markerLine.size(), 1, packageFileOut);
+                    fwrite(ult4ifir::ROOT_MENU_BODY.data(), ult4ifir::ROOT_MENU_BODY.size(), 1, packageFileOut);
+                    fclose(packageFileOut);
+                }
             }
         }
 
