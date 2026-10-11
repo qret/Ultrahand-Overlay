@@ -94,6 +94,12 @@
  *              is built instead of once per placeholder. It runs no commands, so nothing
  *              on disk can change inside it; the cache is gone before addTable().
  *
+ *  2026-10-11  refresh-return takes an optional cursor target with the arguments of
+ *              refresh-to: refresh-return '<name>' ['<value>' [false]]. On leaving the
+ *              selection list the package page is rebuilt with the cursor on that item
+ *              instead of the item that opened the list (main.cpp, SelectionOverlay).
+ *              Without arguments it behaves as before; an older engine ignores them.
+ *
  *  Source of this build: https://github.com/qret/Ultrahand-Overlay, branch 4ifir.
  ********************************************************************************/
 
@@ -136,6 +142,12 @@ std::atomic<bool> interpreterLogging{false};
 
 std::atomic<bool> goBackAfter{false};
 std::atomic<bool> refreshReturnAfter{false};
+// 4IFIR CHANGE 2026-10-11: optional cursor target of refresh-return (refresh-to args).
+// Both empty = no target. Written before refreshReturnAfter's release store, read after
+// its acquire exchange in SelectionOverlay::handleInput.
+std::string refreshReturnName;
+std::string refreshReturnValue;
+std::atomic<bool> refreshReturnExact{true};
 std::atomic<bool> triggerReturnToPackages{false};
 
 std::atomic<bool> usingErista{util::IsErista()};
@@ -5827,6 +5839,14 @@ void processCommand(const std::vector<std::string>& cmd, const std::string& pack
                 return;
             }
             if (commandName == "refresh-return") {
+                // 4IFIR CHANGE 2026-10-11: refresh-return ['<name>' ['<value>' [<exact>]]]
+                refreshReturnName.clear();
+                refreshReturnValue.clear();
+                if (cmdSize > 1)
+                    refreshReturnName = getUnquoted(cmd, 1);
+                if (cmdSize > 2)
+                    refreshReturnValue = getUnquoted(cmd, 2);
+                refreshReturnExact.store(!(cmdSize > 3 && getUnquoted(cmd, 3) == FALSE_STR), std::memory_order_relaxed);
                 refreshReturnAfter.store(true, std::memory_order_release);
                 return;
             }

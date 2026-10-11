@@ -4365,9 +4365,19 @@ public:
                     const ReturnContext returnTo = returnContextStack.top();
                     returnContextStack.pop();
 
-                    jumpItemName  = returnTo.option;
-                    jumpItemValue = "";
-                    jumpItemExactMatch.store(true, std::memory_order_release);
+                    // 4IFIR CHANGE 2026-10-11: refresh-return '<name>' ... lands on that
+                    // item instead of the originating one; the target is single-use.
+                    if (refreshReturnName.empty() && refreshReturnValue.empty()) {
+                        jumpItemName  = returnTo.option;
+                        jumpItemValue = "";
+                        jumpItemExactMatch.store(true, std::memory_order_release);
+                    } else {
+                        jumpItemName  = refreshReturnName;
+                        jumpItemValue = refreshReturnValue;
+                        jumpItemExactMatch.store(refreshReturnExact.load(std::memory_order_relaxed), std::memory_order_release);
+                        refreshReturnName.clear();
+                        refreshReturnValue.clear();
+                    }
                     skipJumpReset.store(true, std::memory_order_release);
 
                     inSubPackageMenu = false;
@@ -6012,6 +6022,8 @@ bool drawCommandsMenu(
                                         .nestedLayer = nestedLayer
                                     });
                                     refreshReturnAfter.store(false, std::memory_order_release);
+                                    refreshReturnName.clear();   // 4IFIR CHANGE 2026-10-11: drop a stale target
+                                    refreshReturnValue.clear();
 
                                     tsl::changeTo<SelectionOverlay>(packagePath, keyName, newKey, lastPackageHeader, commands, showWidget);
                                 }
